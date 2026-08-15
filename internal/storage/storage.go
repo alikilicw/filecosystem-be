@@ -33,7 +33,6 @@ func New(cfg config.S3Config) *Storage {
 		o := s3.Options{
 			Region:       cfg.Region,
 			Credentials:  creds,
-			UsePathStyle: cfg.UsePathStyle,
 		}
 		// Empty endpoint means the SDK talks to real AWS S3 for the region.
 		if endpoint != "" {

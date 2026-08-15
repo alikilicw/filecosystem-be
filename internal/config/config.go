@@ -30,7 +30,6 @@ type S3Config struct {
 	Bucket         string
 	AccessKey      string
 	SecretKey      string
-	UsePathStyle   bool
 	PresignTTL     time.Duration
 }
 
@@ -53,7 +52,6 @@ func Load() (Config, error) {
 			Bucket:         env("S3_BUCKET", ""),
 			AccessKey:      env("S3_ACCESS_KEY", ""),
 			SecretKey:      env("S3_SECRET_KEY", ""),
-			UsePathStyle:   envBool("S3_USE_PATH_STYLE", false),
 			PresignTTL:     envDuration("S3_PRESIGN_TTL", time.Hour),
 		},
 	}
