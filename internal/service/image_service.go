@@ -59,6 +59,11 @@ func (s *ImageService) CreateJob(ctx context.Context, in CreateJobInput) (domain
 	if err != nil {
 		return domain.Job{}, err
 	}
+	// A file the client has not reported uploading may have no object behind it
+	// at all, so it must not reach a worker.
+	if !file.IsUsable() {
+		return domain.Job{}, fmt.Errorf("%w: file %s is %s, not ready", domain.ErrInvalidInput, file.ID, file.Status)
+	}
 	if file.Kind != contracts.KindImage {
 		return domain.Job{}, fmt.Errorf("%w: file %s is not an image", domain.ErrInvalidInput, file.ID)
 	}

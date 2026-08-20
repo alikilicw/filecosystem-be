@@ -84,6 +84,8 @@ func EnsureIndexes(ctx context.Context, client *Client, log *slog.Logger) error 
 	files := client.Collection(CollectionFiles)
 	if _, err := files.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "expires_at", Value: 1}}},
+		// Serves the abandoned-upload sweep, which scans by status and age.
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "updated_at", Value: 1}}},
 	}); err != nil {
 		return fmt.Errorf("create files indexes: %w", err)
 	}

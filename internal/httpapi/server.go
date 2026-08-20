@@ -58,8 +58,12 @@ func (s *Server) Handler() http.Handler {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/capabilities", s.handleCapabilities)
 
+		// Uploads go straight to S3: the API issues a presigned URL, the client
+		// PUTs the bytes to the bucket, then reports back that it did. File
+		// bytes never traverse this service.
 		r.Route("/files", func(r chi.Router) {
-			r.Post("/", s.handleUpload)
+			r.Post("/", s.handleCreateUpload)
+			r.Post("/{fileID}/complete", s.handleCompleteUpload)
 			r.Get("/{fileID}", s.handleGetFile)
 			r.Get("/{fileID}/preview", s.handleFilePreview)
 			r.Get("/{fileID}/jobs", s.handleListFileJobs)

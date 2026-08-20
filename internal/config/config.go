@@ -14,6 +14,7 @@ type Config struct {
 	PublicBaseURL   string
 	MaxUploadBytes  int64
 	FileTTL         time.Duration
+	UploadTTL       time.Duration
 	ShutdownTimeout time.Duration
 
 	MongoURI      string
@@ -35,12 +36,15 @@ type S3Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		Env:             env("APP_ENV", "development"),
-		HTTPAddr:        env("HTTP_ADDR", ":8080"),
-		AllowedOrigins:  env("ALLOWED_ORIGINS", "http://localhost:3000"),
-		PublicBaseURL:   env("PUBLIC_BASE_URL", "http://localhost:8080"),
-		MaxUploadBytes:  envInt64("MAX_UPLOAD_BYTES", 50<<20),
-		FileTTL:         envDuration("FILE_TTL", 24*time.Hour),
+		Env:            env("APP_ENV", "development"),
+		HTTPAddr:       env("HTTP_ADDR", ":8080"),
+		AllowedOrigins: env("ALLOWED_ORIGINS", "http://localhost:3000"),
+		PublicBaseURL:  env("PUBLIC_BASE_URL", "http://localhost:8080"),
+		MaxUploadBytes: envInt64("MAX_UPLOAD_BYTES", 50<<20),
+		FileTTL:        envDuration("FILE_TTL", 24*time.Hour),
+		// How long a presigned upload ticket stays valid, and therefore how
+		// long an upload that never completed is kept before being swept.
+		UploadTTL:       envDuration("UPLOAD_TTL", 15*time.Minute),
 		ShutdownTimeout: envDuration("SHUTDOWN_TIMEOUT", 15*time.Second),
 		MongoURI:        env("MONGO_URI", ""),
 		MongoDatabase:   env("MONGO_DATABASE", "filecosystem"),

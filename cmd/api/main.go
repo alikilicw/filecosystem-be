@@ -73,7 +73,7 @@ func run(log *slog.Logger) error {
 	}
 	defer broker.Close()
 
-	fileService := service.NewFileService(fileRepo, store, log, cfg.MaxUploadBytes, cfg.FileTTL)
+	fileService := service.NewFileService(fileRepo, store, log, cfg.MaxUploadBytes, cfg.FileTTL, cfg.UploadTTL)
 	imageService := service.NewImageService(fileRepo, jobRepo, broker, store, log)
 
 	go runCleanup(ctx, fileService, log)
@@ -106,8 +106,9 @@ func run(log *slog.Logger) error {
 	return server.Shutdown(shutdownCtx)
 }
 
-// runCleanup drops files past their TTL along with the results derived from
-// them, so the object store does not grow without bound.
+// runCleanup keeps the object store from growing without bound. Two things
+// accumulate: files that lived out their TTL along with the results derived from
+// them, and uploads the direct-to-S3 handshake never finished.
 func runCleanup(ctx context.Context, files *service.FileService, log *slog.Logger) {
 	ticker := time.NewTicker(cleanupInterval)
 	defer ticker.Stop()
@@ -117,13 +118,16 @@ func runCleanup(ctx context.Context, files *service.FileService, log *slog.Logge
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			removed, err := files.PurgeExpired(ctx, cleanupBatchSize)
-			if err != nil {
-				log.Error("cleanup failed", "error", err)
-				continue
-			}
-			if removed > 0 {
+			if removed, err := files.PurgeExpired(ctx, cleanupBatchSize); err != nil {
+				log.Error("expiry cleanup failed", "error", err)
+			} else if removed > 0 {
 				log.Info("expired objects removed", "count", removed)
+			}
+
+			if removed, err := files.PurgeAbandoned(ctx, cleanupBatchSize); err != nil {
+				log.Error("abandoned upload cleanup failed", "error", err)
+			} else if removed > 0 {
+				log.Info("abandoned uploads removed", "count", removed)
 			}
 		}
 	}

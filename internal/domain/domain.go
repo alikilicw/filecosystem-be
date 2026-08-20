@@ -14,18 +14,25 @@ var (
 	ErrInvalidInput = errors.New("invalid input")
 )
 
+// File is an upload and everything known about it. Every field but Status and
+// the timestamps is what the client claimed at ticket time; nothing inspects the
+// stored object, so none of it is verified.
 type File struct {
-	ID           uuid.UUID      `json:"id"`
-	OriginalName string         `json:"original_name"`
-	StorageKey   string         `json:"-"`
-	MimeType     string         `json:"mime_type"`
-	SizeBytes    int64          `json:"size_bytes"`
-	Kind         contracts.Kind `json:"kind"`
-	Width        int            `json:"width,omitempty"`
-	Height       int            `json:"height,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	ExpiresAt    time.Time      `json:"expires_at"`
+	ID           uuid.UUID            `json:"id"`
+	OriginalName string               `json:"original_name"`
+	StorageKey   string               `json:"-"`
+	MimeType     string               `json:"mime_type"`
+	SizeBytes    int64                `json:"size_bytes"`
+	Kind         contracts.Kind       `json:"kind"`
+	Status       contracts.FileStatus `json:"status"`
+	CreatedAt    time.Time            `json:"created_at"`
+	UpdatedAt    time.Time            `json:"updated_at"`
+	ExpiresAt    time.Time            `json:"expires_at"`
 }
+
+// IsUsable reports whether the file may be used as a source for a job. A file
+// nobody has reported uploading has no object behind it yet.
+func (f File) IsUsable() bool { return f.Status == contracts.FileStatusReady }
 
 type Job struct {
 	ID         uuid.UUID             `json:"id"`

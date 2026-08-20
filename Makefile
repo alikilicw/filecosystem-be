@@ -29,6 +29,11 @@ apps-up: ## Build and run the API and workers in containers
 logs: ## Follow container logs
 	docker compose --profile apps logs -f
 
+.PHONY: s3-cors
+s3-cors: ## Allow browser uploads to S3_BUCKET (edit deploy/s3-cors.json for your origins)
+	aws s3api put-bucket-cors --bucket $(S3_BUCKET) --cors-configuration file://deploy/s3-cors.json
+	aws s3api get-bucket-cors --bucket $(S3_BUCKET)
+
 .PHONY: run
 run: ## Run the API from source
 	go run ./cmd/api

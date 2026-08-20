@@ -1,26 +1,12 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"image"
-	"io"
 	"log/slog"
-	"mime/multipart"
-	"net/http"
 	"path"
 	"strings"
 	"time"
-
-	// Registered for their DecodeConfig side effects so uploads report dimensions.
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
-
-	_ "golang.org/x/image/bmp"
-	_ "golang.org/x/image/tiff"
-	_ "golang.org/x/image/webp"
 
 	"github.com/alikilicw/filecosystem-be/internal/contracts"
 	"github.com/alikilicw/filecosystem-be/internal/domain"
@@ -29,111 +15,127 @@ import (
 	"github.com/google/uuid"
 )
 
-// sniffLen is what http.DetectContentType inspects; reading exactly this much
-// keeps the sniff buffer small while covering every supported signature.
-const sniffLen = 512
-
-var supportedImageMimes = map[string]string{
-	"image/jpeg": ".jpg",
-	"image/png":  ".png",
-	"image/webp": ".webp",
-	"image/gif":  ".gif",
-	"image/bmp":  ".bmp",
-	"image/tiff": ".tiff",
-}
-
+// FileService runs the direct-to-S3 upload handshake. Bytes never pass through
+// this process: it hands out a presigned URL, records what the client claimed it
+// would upload, and marks the file usable once the client reports it is done.
+// Nothing ever inspects the stored object, so the recorded metadata stays the
+// client's word.
 type FileService struct {
-	files   *repository.FileRepository
-	storage *storage.Storage
-	log     *slog.Logger
-	maxSize int64
-	ttl     time.Duration
+	files     *repository.FileRepository
+	storage   *storage.Storage
+	log       *slog.Logger
+	maxSize   int64
+	ttl       time.Duration
+	uploadTTL time.Duration
 }
 
-func NewFileService(files *repository.FileRepository, store *storage.Storage, log *slog.Logger, maxSize int64, ttl time.Duration) *FileService {
-	return &FileService{files: files, storage: store, log: log, maxSize: maxSize, ttl: ttl}
+func NewFileService(
+	files *repository.FileRepository,
+	store *storage.Storage,
+	log *slog.Logger,
+	maxSize int64,
+	ttl, uploadTTL time.Duration,
+) *FileService {
+	return &FileService{
+		files:     files,
+		storage:   store,
+		log:       log,
+		maxSize:   maxSize,
+		ttl:       ttl,
+		uploadTTL: uploadTTL,
+	}
 }
 
 func (s *FileService) MaxSize() int64 { return s.maxSize }
 
-// Upload validates the incoming part by content sniffing rather than trusting
-// the client-supplied name or content type, then persists it.
-func (s *FileService) Upload(ctx context.Context, header *multipart.FileHeader) (domain.File, error) {
-	if header.Size <= 0 {
-		return domain.File{}, fmt.Errorf("%w: empty file", domain.ErrInvalidInput)
+// CreateUploadInput is what the client says it is about to upload. It decides
+// whether an upload URL is worth issuing at all and what the storage key looks
+// like, and it is also what gets recorded: nothing checks it afterwards.
+type CreateUploadInput struct {
+	Filename    string
+	ContentType string
+	SizeBytes   int64
+}
+
+// CreateUpload reserves a file and returns the presigned URL the client PUTs the
+// bytes to. The checks here are the only ones the platform makes, and they run
+// against the client's claims; the signature then pins the key and content type
+// so the upload can at least go nowhere else.
+func (s *FileService) CreateUpload(ctx context.Context, in CreateUploadInput) (domain.File, storage.PresignedUpload, error) {
+	if in.SizeBytes <= 0 {
+		return domain.File{}, storage.PresignedUpload{}, fmt.Errorf("%w: size_bytes must be positive", domain.ErrInvalidInput)
 	}
-	if header.Size > s.maxSize {
-		return domain.File{}, fmt.Errorf("%w: file exceeds %d bytes", domain.ErrInvalidInput, s.maxSize)
+	if in.SizeBytes > s.maxSize {
+		return domain.File{}, storage.PresignedUpload{}, fmt.Errorf("%w: file exceeds %d bytes", domain.ErrInvalidInput, s.maxSize)
 	}
 
-	src, err := header.Open()
-	if err != nil {
-		return domain.File{}, fmt.Errorf("open upload: %w", err)
-	}
-	defer func() { _ = src.Close() }()
-
-	sniff := make([]byte, sniffLen)
-	n, err := io.ReadFull(src, sniff)
-	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-		return domain.File{}, fmt.Errorf("read upload: %w", err)
-	}
-	sniff = sniff[:n]
-
-	mimeType := http.DetectContentType(sniff)
-	if idx := strings.IndexByte(mimeType, ';'); idx >= 0 {
-		mimeType = strings.TrimSpace(mimeType[:idx])
-	}
-
-	ext, ok := supportedImageMimes[mimeType]
+	kind, ext, ok := contracts.InputMime(in.ContentType)
 	if !ok {
-		return domain.File{}, fmt.Errorf("%w: %s is not a supported image type", domain.ErrUnsupported, mimeType)
-	}
-
-	if _, err := src.Seek(0, io.SeekStart); err != nil {
-		return domain.File{}, fmt.Errorf("rewind upload: %w", err)
-	}
-
-	width, height := imageDimensions(sniff, src)
-	if _, err := src.Seek(0, io.SeekStart); err != nil {
-		return domain.File{}, fmt.Errorf("rewind upload: %w", err)
+		return domain.File{}, storage.PresignedUpload{}, fmt.Errorf("%w: %s is not a supported file type", domain.ErrUnsupported, in.ContentType)
 	}
 
 	now := time.Now().UTC()
 	id := uuid.New()
-	name := sanitizeName(header.Filename, ext)
+	name := sanitizeName(in.Filename, ext)
 	key := fmt.Sprintf("uploads/%s/%s", id, name)
 
-	if err := s.storage.Put(ctx, key, src, header.Size, mimeType); err != nil {
-		return domain.File{}, err
+	// The content type is pinned into the signature, so it has to be the
+	// normalised form the object will actually be stored with.
+	contentType := canonicalMime(in.ContentType)
+
+	// Presigning is local arithmetic, so doing it before the insert means a
+	// failure here leaves nothing behind to clean up.
+	upload, err := s.storage.PresignPut(ctx, key, contentType, s.uploadTTL)
+	if err != nil {
+		return domain.File{}, storage.PresignedUpload{}, err
 	}
 
 	file := domain.File{
 		ID:           id,
 		OriginalName: name,
 		StorageKey:   key,
-		MimeType:     mimeType,
-		SizeBytes:    header.Size,
-		Kind:         contracts.KindImage,
-		Width:        width,
-		Height:       height,
+		MimeType:     contentType,
+		SizeBytes:    in.SizeBytes,
+		Kind:         kind,
+		Status:       contracts.FileStatusPending,
 		CreatedAt:    now,
+		UpdatedAt:    now,
 		ExpiresAt:    now.Add(s.ttl),
 	}
-
 	if err := s.files.Create(ctx, file); err != nil {
-		if delErr := s.storage.Delete(ctx, key); delErr != nil {
-			s.log.Error("orphaned object left in storage", "key", key, "error", delErr)
-		}
+		return domain.File{}, storage.PresignedUpload{}, err
+	}
+	return file, upload, nil
+}
+
+// CompleteUpload is the client reporting that its S3 upload finished, which is
+// the only signal the API gets that an object appeared, and the only thing that
+// makes a file usable. Calling it more than once is safe.
+func (s *FileService) CompleteUpload(ctx context.Context, id uuid.UUID) (domain.File, error) {
+	file, err := s.files.Get(ctx, id)
+	if err != nil {
 		return domain.File{}, err
 	}
-	return file, nil
+	if file.Status != contracts.FileStatusPending {
+		return file, nil
+	}
+
+	if _, err := s.files.MarkReady(ctx, id); err != nil {
+		return domain.File{}, err
+	}
+	return s.files.Get(ctx, id)
 }
 
 func (s *FileService) Get(ctx context.Context, id uuid.UUID) (domain.File, error) {
 	return s.files.Get(ctx, id)
 }
 
+// PreviewURL signs the stored original. It refuses a file the client has not
+// reported uploading, since there may be no object behind the key at all.
 func (s *FileService) PreviewURL(ctx context.Context, file domain.File) (string, error) {
+	if !file.IsUsable() {
+		return "", fmt.Errorf("%w: file %s is not ready", domain.ErrInvalidInput, file.ID)
+	}
 	return s.storage.PresignGet(ctx, file.StorageKey, "")
 }
 
@@ -143,20 +145,44 @@ func (s *FileService) PurgeExpired(ctx context.Context, limit int) (int, error) 
 	if err != nil {
 		return 0, err
 	}
+	return s.purge(ctx, keys), nil
+}
+
+// PurgeAbandoned collects what the handshake leaves behind: upload URLs nobody
+// used, and uploads nobody reported. One expired URL lifetime is the cutoff —
+// past that the client can no longer upload, so a file still pending never will
+// be claimed.
+func (s *FileService) PurgeAbandoned(ctx context.Context, limit int) (int, error) {
+	cutoff := time.Now().UTC().Add(-s.uploadTTL)
+	keys, err := s.files.DeleteAbandoned(ctx, cutoff, limit)
+	if err != nil {
+		return 0, err
+	}
+	return s.purge(ctx, keys), nil
+}
+
+// purge deletes objects best-effort. A key that was never uploaded against has
+// no object behind it, and S3 treats deleting a missing key as success, so both
+// cases fall out the same way.
+func (s *FileService) purge(ctx context.Context, keys []string) int {
+	removed := 0
 	for _, key := range keys {
 		if err := s.storage.Delete(ctx, key); err != nil {
 			s.log.Warn("failed to purge object", "key", key, "error", err)
+			continue
 		}
+		removed++
 	}
-	return len(keys), nil
+	return removed
 }
 
-func imageDimensions(head []byte, rest io.Reader) (int, int) {
-	cfg, _, err := image.DecodeConfig(io.MultiReader(bytes.NewReader(head), rest))
-	if err != nil {
-		return 0, 0
+// canonicalMime strips parameters and folds case so the stored content type
+// matches what the signature pinned.
+func canonicalMime(mime string) string {
+	if idx := strings.IndexByte(mime, ';'); idx >= 0 {
+		mime = mime[:idx]
 	}
-	return cfg.Width, cfg.Height
+	return strings.ToLower(strings.TrimSpace(mime))
 }
 
 // sanitizeName strips any directory component and normalises the extension so

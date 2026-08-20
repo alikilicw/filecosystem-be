@@ -14,10 +14,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// uploadMemoryLimit is how much of a multipart body is buffered in RAM before
-// the rest spills to a temporary file.
-const uploadMemoryLimit = 8 << 20
-
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -42,51 +38,60 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"capabilities":     service.Capabilities(),
-		"max_upload_bytes": s.files.MaxSize(),
-		"file_ttl_seconds": int(s.cfg.FileTTL.Seconds()),
+		"capabilities":       service.Capabilities(),
+		"max_upload_bytes":   s.files.MaxSize(),
+		"file_ttl_seconds":   int(s.cfg.FileTTL.Seconds()),
+		"upload_ttl_seconds": int(s.cfg.UploadTTL.Seconds()),
 	})
 }
 
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	maxSize := s.files.MaxSize()
-	// The multipart envelope adds overhead on top of the payload itself, so the
-	// hard limit is slightly above the configured file size.
-	r.Body = http.MaxBytesReader(w, r.Body, maxSize+uploadMemoryLimit)
+type createUploadRequest struct {
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	SizeBytes   int64  `json:"size_bytes"`
+}
 
-	if err := r.ParseMultipartForm(uploadMemoryLimit); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "file_too_large", "The uploaded file is too large.")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "invalid_multipart", "Expected a multipart form with a 'file' field.")
-		return
-	}
-	defer func() {
-		if r.MultipartForm != nil {
-			_ = r.MultipartForm.RemoveAll()
-		}
-	}()
-
-	_, header, err := r.FormFile("file")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "missing_file", "The 'file' form field is required.")
+// handleCreateUpload issues the presigned URL the browser PUTs the bytes to.
+// The client sends the body as-is with Content-Type set to the returned file's
+// mime_type; no file bytes ever reach this process.
+func (s *Server) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
+	var req createUploadRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", err.Error())
 		return
 	}
 
-	file, err := s.files.Upload(r.Context(), header)
+	file, upload, err := s.files.CreateUpload(r.Context(), service.CreateUploadInput{
+		Filename:    req.Filename,
+		ContentType: req.ContentType,
+		SizeBytes:   req.SizeBytes,
+	})
 	if err != nil {
 		writeServiceError(w, s.log, err)
 		return
 	}
 
-	previewURL, err := s.files.PreviewURL(r.Context(), file)
-	if err != nil {
-		s.log.Error("failed to presign preview", "file_id", file.ID, "error", err)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"file":              file,
+		"upload_url":        upload.URL,
+		"upload_expires_at": upload.ExpiresAt,
+	})
+}
+
+// handleCompleteUpload is the client saying its S3 upload finished, which is
+// what makes the file usable as a job source. Calling it twice is safe.
+func (s *Server) handleCompleteUpload(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseUUID(w, chi.URLParam(r, "fileID"), "file_id")
+	if !ok {
+		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{"file": file, "preview_url": previewURL})
+	file, err := s.files.CompleteUpload(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, s.log, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"file": file})
 }
 
 func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {

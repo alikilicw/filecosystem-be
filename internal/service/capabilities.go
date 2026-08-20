@@ -24,12 +24,10 @@ type Capability struct {
 func Capabilities() []Capability {
 	return []Capability{
 		{
-			Kind:      contracts.KindImage,
-			Title:     "Image",
-			Available: true,
-			InputMimes: []string{
-				"image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp", "image/tiff",
-			},
+			Kind:          contracts.KindImage,
+			Title:         "Image",
+			Available:     true,
+			InputMimes:    contracts.InputMimesFor(contracts.KindImage),
 			OutputFormats: []string{contracts.FormatJPEG, contracts.FormatPNG, contracts.FormatWebP},
 			Operations: []OperationInfo{
 				{

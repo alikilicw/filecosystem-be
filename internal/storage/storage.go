@@ -26,13 +26,21 @@ type Storage struct {
 	ttl     time.Duration
 }
 
+// PresignedUpload is the ticket a client uses to PUT one object straight into
+// the bucket. The signature pins the key and the content type, so the request
+// must send that exact Content-Type header and nothing else.
+type PresignedUpload struct {
+	URL       string    `json:"url"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 func New(cfg config.S3Config) *Storage {
 	creds := credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, "")
 
 	opts := func(endpoint string) s3.Options {
 		o := s3.Options{
-			Region:       cfg.Region,
-			Credentials:  creds,
+			Region:      cfg.Region,
+			Credentials: creds,
 		}
 		// Empty endpoint means the SDK talks to real AWS S3 for the region.
 		if endpoint != "" {
@@ -112,6 +120,40 @@ func (s *Storage) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("delete object %s: %w", key, err)
 	}
 	return nil
+}
+
+// PresignPut issues an upload ticket for exactly one key. The signature pins
+// the key and the content type, so a client cannot redirect the upload
+// elsewhere or store it under a type nobody accepts.
+//
+// A presigned PUT cannot carry a size cap the way a POST policy can, and nothing
+// inspects the object afterwards, so an oversized body is simply stored.
+func (s *Storage) PresignPut(ctx context.Context, key, contentType string, ttl time.Duration) (PresignedUpload, error) {
+	req, err := s.presign.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucket),
+		Key:         aws.String(key),
+		ContentType: aws.String(contentType),
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return PresignedUpload{}, fmt.Errorf("presign put %s: %w", key, err)
+	}
+
+	return PresignedUpload{
+		URL:       req.URL,
+		ExpiresAt: time.Now().UTC().Add(ttl),
+	}, nil
+}
+
+// Head reports what is actually stored under a key without fetching the body.
+func (s *Storage) Head(ctx context.Context, key string) (size int64, contentType string, err error) {
+	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return 0, "", fmt.Errorf("head object %s: %w", key, err)
+	}
+	return aws.ToInt64(out.ContentLength), aws.ToString(out.ContentType), nil
 }
 
 // PresignGet returns a time-limited download URL. A non-empty downloadName

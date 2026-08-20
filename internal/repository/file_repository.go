@@ -18,16 +18,16 @@ import (
 // IDs are stored as strings so documents stay readable in Compass and avoid
 // Binary UUID subtype mismatches across driver versions.
 type fileDocument struct {
-	ID           string         `bson:"_id"`
-	OriginalName string         `bson:"original_name"`
-	StorageKey   string         `bson:"storage_key"`
-	MimeType     string         `bson:"mime_type"`
-	SizeBytes    int64          `bson:"size_bytes"`
-	Kind         contracts.Kind `bson:"kind"`
-	Width        int            `bson:"width"`
-	Height       int            `bson:"height"`
-	CreatedAt    time.Time      `bson:"created_at"`
-	ExpiresAt    time.Time      `bson:"expires_at"`
+	ID           string               `bson:"_id"`
+	OriginalName string               `bson:"original_name"`
+	StorageKey   string               `bson:"storage_key"`
+	MimeType     string               `bson:"mime_type"`
+	SizeBytes    int64                `bson:"size_bytes"`
+	Kind         contracts.Kind       `bson:"kind"`
+	Status       contracts.FileStatus `bson:"status"`
+	CreatedAt    time.Time            `bson:"created_at"`
+	UpdatedAt    time.Time            `bson:"updated_at"`
+	ExpiresAt    time.Time            `bson:"expires_at"`
 }
 
 type FileRepository struct {
@@ -59,6 +59,61 @@ func (r *FileRepository) Get(ctx context.Context, id uuid.UUID) (domain.File, er
 		return domain.File{}, fmt.Errorf("select file: %w", err)
 	}
 	return fromFileDocument(doc)
+}
+
+// MarkReady moves a file out of pending and reports whether this call is the one
+// that did it. The guard makes a duplicate complete request cheap and keeps the
+// timestamps honest when a client reports the same upload twice.
+func (r *FileRepository) MarkReady(ctx context.Context, id uuid.UUID) (bool, error) {
+	res, err := r.files.UpdateOne(ctx,
+		bson.M{"_id": id.String(), "status": contracts.FileStatusPending},
+		bson.M{"$set": bson.M{
+			"status":     contracts.FileStatusReady,
+			"updated_at": time.Now().UTC(),
+		}},
+	)
+	if err != nil {
+		return false, fmt.Errorf("mark file ready: %w", err)
+	}
+	return res.MatchedCount == 1, nil
+}
+
+// DeleteAbandoned drops files that never reached a usable state and returns the
+// storage keys to purge: tickets the client never uploaded against, or uploaded
+// against but never reported.
+func (r *FileRepository) DeleteAbandoned(ctx context.Context, cutoff time.Time, limit int) ([]string, error) {
+	filter := bson.M{
+		"status":     contracts.FileStatusPending,
+		"updated_at": bson.M{"$lt": cutoff},
+	}
+
+	opts := options.Find().SetSort(bson.D{{Key: "updated_at", Value: 1}}).SetLimit(int64(limit))
+	cursor, err := r.files.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("select abandoned files: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var ids, keys []string
+	for cursor.Next(ctx) {
+		var doc fileDocument
+		if err := cursor.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("scan abandoned file: %w", err)
+		}
+		ids = append(ids, doc.ID)
+		keys = append(keys, doc.StorageKey)
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	if _, err := r.files.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}}); err != nil {
+		return nil, fmt.Errorf("delete abandoned files: %w", err)
+	}
+	return keys, nil
 }
 
 // DeleteExpired removes metadata for files past their TTL and returns every
@@ -127,9 +182,9 @@ func toFileDocument(f domain.File) fileDocument {
 		MimeType:     f.MimeType,
 		SizeBytes:    f.SizeBytes,
 		Kind:         f.Kind,
-		Width:        f.Width,
-		Height:       f.Height,
+		Status:       f.Status,
 		CreatedAt:    f.CreatedAt,
+		UpdatedAt:    f.UpdatedAt,
 		ExpiresAt:    f.ExpiresAt,
 	}
 }
@@ -146,9 +201,9 @@ func fromFileDocument(doc fileDocument) (domain.File, error) {
 		MimeType:     doc.MimeType,
 		SizeBytes:    doc.SizeBytes,
 		Kind:         doc.Kind,
-		Width:        doc.Width,
-		Height:       doc.Height,
+		Status:       doc.Status,
 		CreatedAt:    doc.CreatedAt,
+		UpdatedAt:    doc.UpdatedAt,
 		ExpiresAt:    doc.ExpiresAt,
 	}, nil
 }
