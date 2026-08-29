@@ -56,8 +56,6 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/readyz", s.handleReady)
 
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Get("/capabilities", s.handleCapabilities)
-
 		// Uploads go straight to S3: the API issues a presigned URL, the client
 		// PUTs the bytes to the bucket, then reports back that it did. File
 		// bytes never traverse this service.

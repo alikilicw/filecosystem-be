@@ -4,7 +4,6 @@
 package contracts
 
 import (
-	"sort"
 	"strings"
 	"time"
 )
@@ -70,19 +69,6 @@ func InputMime(mime string) (kind Kind, ext string, ok bool) {
 		return "", "", false
 	}
 	return entry.kind, entry.ext, true
-}
-
-// InputMimesFor lists the accepted content types for one family, sorted so the
-// capabilities endpoint stays stable between calls.
-func InputMimesFor(kind Kind) []string {
-	out := make([]string, 0, len(inputMimes))
-	for mime, entry := range inputMimes {
-		if entry.kind == kind {
-			out = append(out, mime)
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 // normalizeMime drops any parameters (charset and friends) and folds case, so a

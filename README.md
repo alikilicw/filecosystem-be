@@ -99,7 +99,6 @@ their objects one `UPLOAD_TTL` after they last changed.
 | ------ | -------------------------------- | ------------------------------------------------ |
 | GET    | `/healthz`                       | Liveness                                          |
 | GET    | `/readyz`                        | Readiness, including MongoDB and broker           |
-| GET    | `/api/v1/capabilities`           | Supported families, operations and upload limits  |
 | POST   | `/api/v1/files`                  | Reserve a file and get a presigned upload URL     |
 | POST   | `/api/v1/files/{id}/complete`    | Report the upload finished, making the file ready |
 | GET    | `/api/v1/files/{id}`             | File metadata as declared at upload time          |
@@ -172,4 +171,5 @@ Collections: `files` and `jobs`. Indexes are created on boot (`expires_at`,
 2. Add a service under `internal/service`.
 3. Mount a namespace such as `/api/v1/video` in `internal/httpapi/server.go`.
 4. Declare the queue and binding in `internal/queue/queue.go`.
-5. Advertise it in `internal/service/capabilities.go`.
+5. Add the family to `FAMILIES` in the frontend's `src/lib/tools.ts`, which is
+   the only place the supported families are listed.

@@ -36,15 +36,6 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, map[string]any{"ready": status == http.StatusOK, "checks": checks})
 }
 
-func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"capabilities":       service.Capabilities(),
-		"max_upload_bytes":   s.files.MaxSize(),
-		"file_ttl_seconds":   int(s.cfg.FileTTL.Seconds()),
-		"upload_ttl_seconds": int(s.cfg.UploadTTL.Seconds()),
-	})
-}
-
 type createUploadRequest struct {
 	Filename    string `json:"filename"`
 	ContentType string `json:"content_type"`

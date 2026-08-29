@@ -46,8 +46,6 @@ func NewFileService(
 	}
 }
 
-func (s *FileService) MaxSize() int64 { return s.maxSize }
-
 // CreateUploadInput is what the client says it is about to upload. It decides
 // whether an upload URL is worth issuing at all and what the storage key looks
 // like, and it is also what gets recorded: nothing checks it afterwards.
