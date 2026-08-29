@@ -9,26 +9,6 @@ endif
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: infra-up
-infra-up: ## Start mongodb and rabbitmq
-	docker compose up -d
-
-.PHONY: infra-down
-infra-down: ## Stop the infrastructure containers
-	docker compose down
-
-.PHONY: infra-reset
-infra-reset: ## Stop the infrastructure and delete its volumes
-	docker compose down -v
-
-.PHONY: apps-up
-apps-up: ## Build and run the API and workers in containers
-	docker compose --profile apps up -d --build
-
-.PHONY: logs
-logs: ## Follow container logs
-	docker compose --profile apps logs -f
-
 .PHONY: s3-cors
 s3-cors: ## Allow browser uploads to S3_BUCKET (edit deploy/s3-cors.json for your origins)
 	aws s3api put-bucket-cors --bucket $(S3_BUCKET) --cors-configuration file://deploy/s3-cors.json
