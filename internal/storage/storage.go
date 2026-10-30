@@ -26,12 +26,13 @@ type Storage struct {
 	ttl     time.Duration
 }
 
-// PresignedUpload is the ticket a client uses to PUT one object straight into
-// the bucket. The signature pins the key and the content type, so the request
-// must send that exact Content-Type header and nothing else.
+// PresignedUpload is the ticket a client uses to POST one object straight into
+// the bucket as a multipart form: every entry in Fields goes into the form,
+// followed by the file itself as the last field, named "file".
 type PresignedUpload struct {
-	URL       string    `json:"url"`
-	ExpiresAt time.Time `json:"expires_at"`
+	URL       string            `json:"url"`
+	Fields    map[string]string `json:"fields"`
+	ExpiresAt time.Time         `json:"expires_at"`
 }
 
 func New(cfg config.S3Config) *Storage {
@@ -122,24 +123,39 @@ func (s *Storage) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// PresignPut issues an upload ticket for exactly one key. The signature pins
-// the key and the content type, so a client cannot redirect the upload
-// elsewhere or store it under a type nobody accepts.
+// PresignPost issues an upload ticket for exactly one object. The signed policy
+// pins the key, the content type and the exact size in bytes, and S3 enforces
+// all three: a client cannot redirect the upload, store an unaccepted type, or
+// send more (or fewer) bytes than it declared. A presigned PUT cannot limit
+// the size, which is why uploads use POST.
 //
-// A presigned PUT cannot carry a size cap the way a POST policy can, and nothing
-// inspects the object afterwards, so an oversized body is simply stored.
-func (s *Storage) PresignPut(ctx context.Context, key, contentType string, ttl time.Duration) (PresignedUpload, error) {
-	req, err := s.presign.PresignPutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(s.bucket),
-		Key:         aws.String(key),
-		ContentType: aws.String(contentType),
-	}, s3.WithPresignExpires(ttl))
+// The ticket can be reused until it expires, but only to overwrite the same
+// key with a body of the same size.
+func (s *Storage) PresignPost(ctx context.Context, key, contentType string, size int64, ttl time.Duration) (PresignedUpload, error) {
+	req, err := s.presign.PresignPostObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}, func(o *s3.PresignPostOptions) {
+		o.Expires = ttl
+		o.Conditions = []any{
+			map[string]string{"Content-Type": contentType},
+			[]any{"content-length-range", size, size},
+		}
+	})
 	if err != nil {
-		return PresignedUpload{}, fmt.Errorf("presign put %s: %w", key, err)
+		return PresignedUpload{}, fmt.Errorf("presign post %s: %w", key, err)
 	}
+
+	// The policy requires a Content-Type field, so hand it out with the rest.
+	fields := make(map[string]string, len(req.Values)+1)
+	for k, v := range req.Values {
+		fields[k] = v
+	}
+	fields["Content-Type"] = contentType
 
 	return PresignedUpload{
 		URL:       req.URL,
+		Fields:    fields,
 		ExpiresAt: time.Now().UTC().Add(ttl),
 	}, nil
 }

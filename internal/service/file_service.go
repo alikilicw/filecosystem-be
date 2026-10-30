@@ -47,18 +47,19 @@ func NewFileService(
 }
 
 // CreateUploadInput is what the client says it is about to upload. It decides
-// whether an upload URL is worth issuing at all and what the storage key looks
-// like, and it is also what gets recorded: nothing checks it afterwards.
+// whether an upload is worth allowing at all and what the storage key looks
+// like. The content type and size are signed into the upload policy, so S3
+// refuses any upload that does not match them.
 type CreateUploadInput struct {
 	Filename    string
 	ContentType string
 	SizeBytes   int64
 }
 
-// CreateUpload reserves a file and returns the presigned URL the client PUTs the
-// bytes to. The checks here are the only ones the platform makes, and they run
-// against the client's claims; the signature then pins the key and content type
-// so the upload can at least go nowhere else.
+// CreateUpload reserves a file and returns the presigned form the client POSTs
+// the bytes to. The size and type limits are checked here against the
+// client's claims, and the signed policy makes S3 hold the upload to exactly
+// those claims: same key, same content type, same number of bytes.
 func (s *FileService) CreateUpload(ctx context.Context, in CreateUploadInput) (domain.File, storage.PresignedUpload, error) {
 	if in.SizeBytes <= 0 {
 		return domain.File{}, storage.PresignedUpload{}, fmt.Errorf("%w: size_bytes must be positive", domain.ErrInvalidInput)
@@ -82,8 +83,10 @@ func (s *FileService) CreateUpload(ctx context.Context, in CreateUploadInput) (d
 	contentType := canonicalMime(in.ContentType)
 
 	// Presigning is local arithmetic, so doing it before the insert means a
-	// failure here leaves nothing behind to clean up.
-	upload, err := s.storage.PresignPut(ctx, key, contentType, s.uploadTTL)
+	// failure here leaves nothing behind to clean up. The policy pins the
+	// declared size, so S3 rejects any body that is not exactly that long and
+	// the recorded SizeBytes matches what is stored.
+	upload, err := s.storage.PresignPost(ctx, key, contentType, in.SizeBytes, s.uploadTTL)
 	if err != nil {
 		return domain.File{}, storage.PresignedUpload{}, err
 	}

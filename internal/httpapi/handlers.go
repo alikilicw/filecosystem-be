@@ -42,9 +42,9 @@ type createUploadRequest struct {
 	SizeBytes   int64  `json:"size_bytes"`
 }
 
-// handleCreateUpload issues the presigned URL the browser PUTs the bytes to.
-// The client sends the body as-is with Content-Type set to the returned file's
-// mime_type; no file bytes ever reach this process.
+// handleCreateUpload issues the presigned form the browser POSTs the bytes to:
+// upload_fields go into a multipart form, followed by the file as the last
+// field, named "file". No file bytes ever reach this process.
 func (s *Server) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
 	var req createUploadRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -65,6 +65,7 @@ func (s *Server) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"file":              file,
 		"upload_url":        upload.URL,
+		"upload_fields":     upload.Fields,
 		"upload_expires_at": upload.ExpiresAt,
 	})
 }

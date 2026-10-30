@@ -67,16 +67,17 @@ Without that, uploads fail in the browser with an opaque network error while
 
 ## Uploads
 
-An upload is a three-step handshake. The API never receives file bytes, and never
-learns anything about them beyond what the client declared.
+An upload is a three-step handshake. The API never receives file bytes.
 
 1. `POST /api/v1/files` with the file's name, type and size. The response holds
-   the reserved file (`status: pending`), an `upload_url` and its
-   `upload_expires_at`.
-2. `PUT` the raw file bytes to `upload_url` with `Content-Type` set to the
-   reserved file's `mime_type`. The signature pins the key and that content
-   type, so the upload can go nowhere else, but neither the bucket nor the API
-   checks the size or what the bytes actually are.
+   the reserved file (`status: pending`), an `upload_url`, the `upload_fields`
+   of a presigned S3 POST policy, and its `upload_expires_at`.
+2. `POST` a `multipart/form-data` form to `upload_url`: every entry of
+   `upload_fields` first, then the file as the last field, named `file`. The
+   signed policy pins the key, the content type and the exact size in bytes,
+   and S3 itself rejects an upload that differs (`EntityTooLarge`,
+   `EntityTooSmall`, `AccessDenied`). What the bytes actually are is still not
+   checked.
 3. `POST /api/v1/files/{id}/complete`. This is the only signal the API gets that
    an object appeared, and it is what makes the file usable. The response comes
    back `ready`. Calling it more than once is safe.
@@ -86,8 +87,8 @@ learns anything about them beyond what the client declared.
 | `pending` | URL issued, waiting for the client to upload      |
 | `ready`   | Client reported the upload; usable as a job source |
 
-Only a `ready` file may be used as a job source. Everything sent in step 1 is an
-unverified claim that is recorded as-is, so a mislabelled or oversized upload is
+Only a `ready` file may be used as a job source. The declared size and type are
+enforced by S3, but the content is not inspected, so a mislabelled upload is
 only caught when a worker fails to decode it and the job comes back `failed`.
 
 Upload URLs nobody used, and uploads nobody reported, are swept together with
