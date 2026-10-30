@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -49,6 +50,10 @@ type S3Config struct {
 	AccessKey      string
 	SecretKey      string
 	PresignTTL     time.Duration
+	// CDNBaseURL serves stored files through a CDN in front of the private
+	// bucket (e.g. https://cdn.filecosystem.com). Empty falls back to
+	// presigned S3 URLs, which is what local development uses.
+	CDNBaseURL string
 }
 
 func Load() (Config, error) {
@@ -81,6 +86,7 @@ func Load() (Config, error) {
 			AccessKey:      env("S3_ACCESS_KEY", ""),
 			SecretKey:      env("S3_SECRET_KEY", ""),
 			PresignTTL:     envDuration("S3_PRESIGN_TTL", time.Hour),
+			CDNBaseURL:     strings.TrimRight(env("CDN_BASE_URL", ""), "/"),
 		},
 	}
 

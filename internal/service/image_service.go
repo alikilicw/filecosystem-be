@@ -133,7 +133,7 @@ func (s *ImageService) ListJobsByFile(ctx context.Context, fileID uuid.UUID) ([]
 	return views, nil
 }
 
-// DownloadURL signs the result of a finished job.
+// DownloadURL links to the result of a finished job.
 func (s *ImageService) DownloadURL(ctx context.Context, id uuid.UUID) (string, error) {
 	job, err := s.jobs.Get(ctx, id)
 	if err != nil {
@@ -142,7 +142,7 @@ func (s *ImageService) DownloadURL(ctx context.Context, id uuid.UUID) (string, e
 	if job.Status != contracts.StatusSucceeded || job.ResultKey == "" {
 		return "", fmt.Errorf("%w: job %s has no result yet", domain.ErrInvalidInput, id)
 	}
-	return s.storage.PresignGet(ctx, job.ResultKey, job.ResultName)
+	return s.storage.ObjectURL(ctx, job.ResultKey, job.ResultName)
 }
 
 func (s *ImageService) view(ctx context.Context, job domain.Job) JobView {
@@ -151,14 +151,14 @@ func (s *ImageService) view(ctx context.Context, job domain.Job) JobView {
 		return v
 	}
 
-	if url, err := s.storage.PresignGet(ctx, job.ResultKey, job.ResultName); err != nil {
-		s.log.Error("failed to presign download", "job_id", job.ID, "error", err)
+	if url, err := s.storage.ObjectURL(ctx, job.ResultKey, job.ResultName); err != nil {
+		s.log.Error("failed to build download url", "job_id", job.ID, "error", err)
 	} else {
 		v.DownloadURL = url
 	}
 
-	if url, err := s.storage.PresignGet(ctx, job.ResultKey, ""); err != nil {
-		s.log.Error("failed to presign preview", "job_id", job.ID, "error", err)
+	if url, err := s.storage.ObjectURL(ctx, job.ResultKey, ""); err != nil {
+		s.log.Error("failed to build preview url", "job_id", job.ID, "error", err)
 	} else {
 		v.PreviewURL = url
 	}

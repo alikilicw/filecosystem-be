@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,5 +82,43 @@ func TestPresignPostPinsKeyTypeAndSize(t *testing.T) {
 	}
 	if !gotKey {
 		t.Errorf("policy does not pin key: %s", raw)
+	}
+}
+
+func TestObjectURLUsesCDN(t *testing.T) {
+	s := New(config.S3Config{
+		Region:     "us-east-1",
+		Bucket:     "test-bucket",
+		AccessKey:  "AKIDEXAMPLE",
+		SecretKey:  "secret",
+		PresignTTL: time.Hour,
+		CDNBaseURL: "https://cdn.filecosystem.com",
+	})
+
+	got, err := s.ObjectURL(context.Background(), "results/0b4e/photo 1-800x600.png", "photo 1-800x600.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://cdn.filecosystem.com/results/0b4e/photo%201-800x600.png"; got != want {
+		t.Errorf("ObjectURL = %q, want %q", got, want)
+	}
+}
+
+func TestObjectURLFallsBackToPresignedS3(t *testing.T) {
+	s := New(config.S3Config{
+		Region:     "us-east-1",
+		Bucket:     "test-bucket",
+		AccessKey:  "AKIDEXAMPLE",
+		SecretKey:  "secret",
+		PresignTTL: time.Hour,
+	})
+
+	got, err := s.ObjectURL(context.Background(), "results/0b4e/photo.png", "photo.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "test-bucket") || !strings.Contains(got, "X-Amz-Signature=") ||
+		!strings.Contains(got, "response-content-disposition=") {
+		t.Errorf("expected a presigned S3 URL with a download name, got %q", got)
 	}
 }

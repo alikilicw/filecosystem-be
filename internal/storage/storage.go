@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/alikilicw/filecosystem-be/internal/config"
@@ -24,6 +25,7 @@ type Storage struct {
 	presign *s3.PresignClient
 	bucket  string
 	ttl     time.Duration
+	cdnBase string
 }
 
 // PresignedUpload is the ticket a client uses to POST one object straight into
@@ -63,6 +65,7 @@ func New(cfg config.S3Config) *Storage {
 		presign: s3.NewPresignClient(publicClient),
 		bucket:  cfg.Bucket,
 		ttl:     cfg.PresignTTL,
+		cdnBase: cfg.CDNBaseURL,
 	}
 }
 
@@ -172,9 +175,32 @@ func (s *Storage) Head(ctx context.Context, key string) (size int64, contentType
 	return aws.ToInt64(out.ContentLength), aws.ToString(out.ContentType), nil
 }
 
-// PresignGet returns a time-limited download URL. A non-empty downloadName
-// makes the browser save the file under that name instead of the storage key.
-func (s *Storage) PresignGet(ctx context.Context, key, downloadName string) (string, error) {
+// ObjectURL returns the URL a browser loads a stored object from.
+//
+// With a CDN configured it is a plain CDN link: the bucket stays private
+// behind the CDN, and the random UUID in every key keeps links unguessable.
+// downloadName is not used then; results carry their own Content-Disposition,
+// set by the worker when it stores them.
+//
+// Without a CDN it falls back to a presigned S3 URL, where a non-empty
+// downloadName makes the browser save the file under that name.
+func (s *Storage) ObjectURL(ctx context.Context, key, downloadName string) (string, error) {
+	if s.cdnBase != "" {
+		return s.cdnBase + "/" + escapeKey(key), nil
+	}
+	return s.presignGet(ctx, key, downloadName)
+}
+
+// escapeKey escapes each path segment of a key but keeps the slashes.
+func escapeKey(key string) string {
+	parts := strings.Split(key, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
+}
+
+func (s *Storage) presignGet(ctx context.Context, key, downloadName string) (string, error) {
 	in := &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
