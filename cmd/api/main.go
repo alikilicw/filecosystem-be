@@ -80,7 +80,7 @@ func run(log *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewServer(cfg, log, fileService, imageService, broker, mongo).Handler(),
+		Handler:           httpapi.NewServer(cfg, log, fileService, imageService, broker, mongo).Handler(ctx),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      3 * time.Minute,
 		IdleTimeout:       2 * time.Minute,

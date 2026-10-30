@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -35,11 +36,15 @@ func NewServer(
 	return &Server{cfg: cfg, log: log, files: files, images: images, queue: q, mongo: mongo}
 }
 
-func (s *Server) Handler() http.Handler {
+// Handler builds the router. ctx bounds background work such as the rate
+// limiter's cleanup loop.
+func (s *Server) Handler(ctx context.Context) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	if s.cfg.TrustProxyHeaders {
+		r.Use(proxyRealIP)
+	}
 	r.Use(middleware.Recoverer)
 	r.Use(requestLogger(s.log))
 	r.Use(middleware.Timeout(2 * time.Minute))
@@ -55,7 +60,14 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/healthz", s.handleHealth)
 	r.Get("/readyz", s.handleReady)
 
+	// Limits sit after CORS so preflights are never counted and 429 responses
+	// still carry the CORS headers the browser needs to read them.
+	writeLimit := newIPRateLimiter(ctx, s.cfg.RateLimit.WritePerMinute, s.cfg.RateLimit.WriteBurst)
+	readLimit := newIPRateLimiter(ctx, s.cfg.RateLimit.ReadPerMinute, s.cfg.RateLimit.ReadBurst)
+
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(byMethod(readLimit.Middleware, writeLimit.Middleware))
+
 		// Uploads go straight to S3: the API issues a presigned URL, the client
 		// PUTs the bytes to the bucket, then reports back that it did. File
 		// bytes never traverse this service.
@@ -82,6 +94,20 @@ func (s *Server) Handler() http.Handler {
 	return r
 }
 
+// byMethod sends GET and HEAD through read and everything else through write.
+func byMethod(read, write func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		readNext, writeNext := read(next), write(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				readNext.ServeHTTP(w, r)
+				return
+			}
+			writeNext.ServeHTTP(w, r)
+		})
+	}
+}
+
 func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +118,7 @@ func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 			log.Info("http request",
 				"method", r.Method,
 				"path", r.URL.Path,
+				"client_ip", clientKey(r),
 				"status", ww.Status(),
 				"bytes", ww.BytesWritten(),
 				"duration_ms", time.Since(start).Milliseconds(),
