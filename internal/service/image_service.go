@@ -27,13 +27,12 @@ type CreateJobInput struct {
 	Params    contracts.ImageParams
 }
 
-// JobView is the API representation of a job: the stored row plus freshly
-// signed URLs once a result exists. The download URL carries an attachment
-// disposition, so a separate preview URL is needed to show the result inline.
+// JobView is the API representation of a job: the stored row plus a link to
+// the result once one exists. The link opens the result in the browser; to
+// save it, clients use GET /api/v1/jobs/{id}/download.
 type JobView struct {
 	domain.Job
-	DownloadURL string `json:"download_url,omitempty"`
-	PreviewURL  string `json:"preview_url,omitempty"`
+	ResultURL string `json:"result_url,omitempty"`
 }
 
 type ImageService struct {
@@ -133,7 +132,7 @@ func (s *ImageService) ListJobsByFile(ctx context.Context, fileID uuid.UUID) ([]
 	return views, nil
 }
 
-// DownloadURL links to the result of a finished job.
+// DownloadURL links to the result of a finished job so the browser saves it.
 func (s *ImageService) DownloadURL(ctx context.Context, id uuid.UUID) (string, error) {
 	job, err := s.jobs.Get(ctx, id)
 	if err != nil {
@@ -142,7 +141,7 @@ func (s *ImageService) DownloadURL(ctx context.Context, id uuid.UUID) (string, e
 	if job.Status != contracts.StatusSucceeded || job.ResultKey == "" {
 		return "", fmt.Errorf("%w: job %s has no result yet", domain.ErrInvalidInput, id)
 	}
-	return s.storage.ObjectURL(ctx, job.ResultKey, job.ResultName)
+	return s.storage.DownloadURL(ctx, job.ResultKey, job.ResultName)
 }
 
 func (s *ImageService) view(ctx context.Context, job domain.Job) JobView {
@@ -151,16 +150,10 @@ func (s *ImageService) view(ctx context.Context, job domain.Job) JobView {
 		return v
 	}
 
-	if url, err := s.storage.ObjectURL(ctx, job.ResultKey, job.ResultName); err != nil {
-		s.log.Error("failed to build download url", "job_id", job.ID, "error", err)
+	if url, err := s.storage.ObjectURL(ctx, job.ResultKey); err != nil {
+		s.log.Error("failed to build result url", "job_id", job.ID, "error", err)
 	} else {
-		v.DownloadURL = url
-	}
-
-	if url, err := s.storage.ObjectURL(ctx, job.ResultKey, ""); err != nil {
-		s.log.Error("failed to build preview url", "job_id", job.ID, "error", err)
-	} else {
-		v.PreviewURL = url
+		v.ResultURL = url
 	}
 	return v
 }

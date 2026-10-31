@@ -137,7 +137,7 @@ func (s *FileService) PreviewURL(ctx context.Context, file domain.File) (string,
 	if !file.IsUsable() {
 		return "", fmt.Errorf("%w: file %s is not ready", domain.ErrInvalidInput, file.ID)
 	}
-	return s.storage.ObjectURL(ctx, file.StorageKey, "")
+	return s.storage.ObjectURL(ctx, file.StorageKey)
 }
 
 // PurgeExpired drops files past their TTL along with their derived results.

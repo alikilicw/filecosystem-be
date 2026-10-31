@@ -95,12 +95,21 @@ func TestObjectURLUsesCDN(t *testing.T) {
 		CDNBaseURL: "https://cdn.filecosystem.com",
 	})
 
-	got, err := s.ObjectURL(context.Background(), "results/0b4e/photo 1-800x600.png", "photo 1-800x600.png")
+	key := "results/0b4e/photo 1-800x600.png"
+	got, err := s.ObjectURL(context.Background(), key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := "https://cdn.filecosystem.com/results/0b4e/photo%201-800x600.png"; got != want {
 		t.Errorf("ObjectURL = %q, want %q", got, want)
+	}
+
+	got, err = s.DownloadURL(context.Background(), key, "photo 1-800x600.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://cdn.filecosystem.com/results/0b4e/photo%201-800x600.png?download=1"; got != want {
+		t.Errorf("DownloadURL = %q, want %q", got, want)
 	}
 }
 
@@ -113,7 +122,7 @@ func TestObjectURLFallsBackToPresignedS3(t *testing.T) {
 		PresignTTL: time.Hour,
 	})
 
-	got, err := s.ObjectURL(context.Background(), "results/0b4e/photo.png", "photo.png")
+	got, err := s.DownloadURL(context.Background(), "results/0b4e/photo.png", "photo.png")
 	if err != nil {
 		t.Fatal(err)
 	}

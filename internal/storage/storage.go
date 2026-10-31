@@ -175,18 +175,28 @@ func (s *Storage) Head(ctx context.Context, key string) (size int64, contentType
 	return aws.ToInt64(out.ContentLength), aws.ToString(out.ContentType), nil
 }
 
-// ObjectURL returns the URL a browser loads a stored object from.
+// ObjectURL returns a link that opens a stored object in the browser.
 //
 // With a CDN configured it is a plain CDN link: the bucket stays private
 // behind the CDN, and the random UUID in every key keeps links unguessable.
-// downloadName is not used then; results carry their own Content-Disposition,
-// set by the worker when it stores them.
-//
-// Without a CDN it falls back to a presigned S3 URL, where a non-empty
-// downloadName makes the browser save the file under that name.
-func (s *Storage) ObjectURL(ctx context.Context, key, downloadName string) (string, error) {
+// Without a CDN it falls back to a presigned S3 URL.
+func (s *Storage) ObjectURL(ctx context.Context, key string) (string, error) {
 	if s.cdnBase != "" {
 		return s.cdnBase + "/" + escapeKey(key), nil
+	}
+	return s.presignGet(ctx, key, "")
+}
+
+// DownloadURL returns a link that makes the browser save the object under
+// downloadName instead of opening it.
+//
+// On the CDN this is the ObjectURL plus "?download=1"; the CloudFront Function
+// in infra/cloudfront turns that into an attachment Content-Disposition. The
+// query string is not part of the cache key, so both links share one cached
+// copy. Without a CDN the presigned URL overrides the header itself.
+func (s *Storage) DownloadURL(ctx context.Context, key, downloadName string) (string, error) {
+	if s.cdnBase != "" {
+		return s.cdnBase + "/" + escapeKey(key) + "?download=1", nil
 	}
 	return s.presignGet(ctx, key, downloadName)
 }
