@@ -218,6 +218,9 @@ func normalizeParams(op contracts.Operation, p contracts.ImageParams, sourceMime
 		}
 		out.StripMetadata = true
 
+	case contracts.OpPipeline:
+		return normalizePipeline(p, fallbackFormat)
+
 	default:
 		return out, fmt.Errorf("%w: unknown operation %q", domain.ErrUnsupported, op)
 	}

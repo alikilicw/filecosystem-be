@@ -87,6 +87,9 @@ const (
 	OpConvert  Operation = "convert"
 	OpResize   Operation = "resize"
 	OpCompress Operation = "compress"
+	// OpPipeline replays the image editor's edits (Params.Steps) on the
+	// original, at full resolution, then encodes it once.
+	OpPipeline Operation = "pipeline"
 )
 
 // Status is the lifecycle state of a job.
@@ -117,6 +120,53 @@ type ImageParams struct {
 	Height        int    `json:"height,omitempty" bson:"height,omitempty"`
 	Fit           Fit    `json:"fit,omitempty" bson:"fit,omitempty"`
 	StripMetadata bool   `json:"strip_metadata,omitempty" bson:"strip_metadata,omitempty"`
+
+	// Pipeline only. Steps run in order; TargetBytes, when set, makes the
+	// encoder pick the highest quality whose output fits under it.
+	Steps       []ImageStep `json:"steps,omitempty" bson:"steps,omitempty"`
+	TargetBytes int64       `json:"target_bytes,omitempty" bson:"target_bytes,omitempty"`
+}
+
+// StepOp is one edit in a pipeline.
+type StepOp string
+
+const (
+	StepResize    StepOp = "resize"
+	StepCrop      StepOp = "crop"
+	StepRotate    StepOp = "rotate"
+	StepFlip      StepOp = "flip"
+	StepPixelate  StepOp = "pixelate"
+	StepGrayscale StepOp = "grayscale"
+)
+
+// MaxPipelineSteps bounds how much work one job can ask for.
+const MaxPipelineSteps = 50
+
+// ImageStep is one edit, in the pixels of the image as it is when the step
+// runs (after the steps before it). Which fields apply depends on Op:
+//
+//	resize     Width, Height (exact output size)
+//	crop       X, Y, Width, Height
+//	rotate     Degrees (clockwise); Expand grows the canvas to fit the
+//	           rotated image instead of cutting the corners; Fill "white"
+//	           paints the uncovered corners, otherwise they stay transparent
+//	flip       Axis "horizontal" or "vertical"
+//	pixelate   Block (size of one block); X, Y, Width, Height limit it to an
+//	           area, and a zero Width means the whole image
+//	grayscale  Mode "gray" (Rec. 601 luma) or "bw" (luma >= Threshold is white)
+type ImageStep struct {
+	Op        StepOp  `json:"op" bson:"op"`
+	X         int     `json:"x,omitempty" bson:"x,omitempty"`
+	Y         int     `json:"y,omitempty" bson:"y,omitempty"`
+	Width     int     `json:"width,omitempty" bson:"width,omitempty"`
+	Height    int     `json:"height,omitempty" bson:"height,omitempty"`
+	Degrees   float64 `json:"degrees,omitempty" bson:"degrees,omitempty"`
+	Expand    bool    `json:"expand,omitempty" bson:"expand,omitempty"`
+	Fill      string  `json:"fill,omitempty" bson:"fill,omitempty"`
+	Axis      string  `json:"axis,omitempty" bson:"axis,omitempty"`
+	Block     int     `json:"block,omitempty" bson:"block,omitempty"`
+	Mode      string  `json:"mode,omitempty" bson:"mode,omitempty"`
+	Threshold int     `json:"threshold,omitempty" bson:"threshold,omitempty"`
 }
 
 // Output formats the workers can encode. Keeping the list here means the API
