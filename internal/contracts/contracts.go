@@ -57,7 +57,6 @@ var inputMimes = map[string]inputMime{
 	"image/webp": {KindImage, ".webp"},
 	"image/gif":  {KindImage, ".gif"},
 	"image/bmp":  {KindImage, ".bmp"},
-	"image/tiff": {KindImage, ".tiff"},
 }
 
 // InputMime resolves a content type to the family that handles it and the
@@ -83,14 +82,10 @@ func normalizeMime(mime string) string {
 // Operation is the transformation requested for a job.
 type Operation string
 
-const (
-	OpConvert  Operation = "convert"
-	OpResize   Operation = "resize"
-	OpCompress Operation = "compress"
-	// OpPipeline replays the image editor's edits (Params.Steps) on the
-	// original, at full resolution, then encodes it once.
-	OpPipeline Operation = "pipeline"
-)
+// OpPipeline replays the image editor's edits (Params.Steps) on the original,
+// at full resolution, then encodes it once. It is the only image operation:
+// resizing, compressing and converting are all steps or output settings of it.
+const OpPipeline Operation = "pipeline"
 
 // Status is the lifecycle state of a job.
 type Status string
@@ -102,27 +97,14 @@ const (
 	StatusFailed     Status = "failed"
 )
 
-// Fit controls how a resize handles a mismatched aspect ratio.
-type Fit string
-
-const (
-	FitContain Fit = "contain" // fit inside the box, keep aspect ratio
-	FitCover   Fit = "cover"   // fill the box, crop the overflow
-	FitFill    Fit = "fill"    // stretch to the exact box
-)
-
-// ImageParams carries the tunables for every image operation. Fields not
-// relevant to the requested operation are left at their zero value.
+// ImageParams carries a pipeline job's output settings and its edits.
 type ImageParams struct {
 	Format        string `json:"format,omitempty" bson:"format,omitempty"`
 	Quality       int    `json:"quality,omitempty" bson:"quality,omitempty"`
-	Width         int    `json:"width,omitempty" bson:"width,omitempty"`
-	Height        int    `json:"height,omitempty" bson:"height,omitempty"`
-	Fit           Fit    `json:"fit,omitempty" bson:"fit,omitempty"`
 	StripMetadata bool   `json:"strip_metadata,omitempty" bson:"strip_metadata,omitempty"`
 
-	// Pipeline only. Steps run in order; TargetBytes, when set, makes the
-	// encoder pick the highest quality whose output fits under it.
+	// Steps run in order; TargetBytes, when set, makes the encoder pick the
+	// highest quality whose output fits under it.
 	Steps       []ImageStep `json:"steps,omitempty" bson:"steps,omitempty"`
 	TargetBytes int64       `json:"target_bytes,omitempty" bson:"target_bytes,omitempty"`
 }
@@ -191,7 +173,7 @@ func FormatInfo(format string) (ext, mime string, ok bool) {
 	return "", "", false
 }
 
-// FormatFromMime is the inverse of FormatInfo, used when an operation keeps the
+// FormatFromMime is the inverse of FormatInfo, used when a job keeps the
 // source format instead of converting it. It returns "" for unencodable inputs.
 func FormatFromMime(mime string) string {
 	switch strings.ToLower(strings.TrimSpace(mime)) {

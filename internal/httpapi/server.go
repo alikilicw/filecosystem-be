@@ -69,14 +69,11 @@ func (s *Server) Handler(ctx context.Context) http.Handler {
 		r.Use(byMethod(readLimit.Middleware, writeLimit.Middleware))
 
 		// Uploads go straight to S3: the API issues a presigned URL, the client
-		// PUTs the bytes to the bucket, then reports back that it did. File
+		// POSTs the bytes to the bucket, then reports back that it did. File
 		// bytes never traverse this service.
 		r.Route("/files", func(r chi.Router) {
 			r.Post("/", s.handleCreateUpload)
 			r.Post("/{fileID}/complete", s.handleCompleteUpload)
-			r.Get("/{fileID}", s.handleGetFile)
-			r.Get("/{fileID}/preview", s.handleFilePreview)
-			r.Get("/{fileID}/jobs", s.handleListFileJobs)
 		})
 
 		// Each file family gets its own namespace so video and document

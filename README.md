@@ -14,7 +14,7 @@ browser ──────────bytes────────────�
    └──────────── job.result ───────────┘
 ```
 
-File bytes never pass through the API. It signs an upload URL, the browser PUTs
+File bytes never pass through the API. It signs an upload form, the browser POSTs
 straight to S3, and the client reports back that it did. Nothing inspects what
 actually landed there, so a file's recorded type and size stay the client's
 word.
@@ -102,45 +102,47 @@ their objects one `UPLOAD_TTL` after they last changed.
 | GET    | `/readyz`                        | Readiness, including MongoDB and broker           |
 | POST   | `/api/v1/files`                  | Reserve a file and get a presigned upload URL     |
 | POST   | `/api/v1/files/{id}/complete`    | Report the upload finished, making the file ready |
-| GET    | `/api/v1/files/{id}`             | File metadata as declared at upload time          |
-| GET    | `/api/v1/files/{id}/preview`     | Signed URL for the original, once uploaded        |
-| GET    | `/api/v1/files/{id}/jobs`        | Every job created from a file                     |
-| POST   | `/api/v1/image/jobs`             | Queue an image job                                |
+| POST   | `/api/v1/image/jobs`             | Queue a pipeline job on an uploaded image         |
 | GET    | `/api/v1/jobs/{id}`              | Job status plus signed result URLs                |
 | GET    | `/api/v1/jobs/{id}/download`     | Redirect to the signed result URL                 |
 
-Uploading and then converting a file:
+Uploading a file and exporting an edit of it:
 
 ```bash
-# 1. reserve it and get an upload url
+# 1. reserve it and get an upload form
 curl -s http://localhost:8080/api/v1/files \
   -H 'Content-Type: application/json' \
   -d '{"filename":"photo.jpg","content_type":"image/jpeg","size_bytes":184320}'
 
-# 2. send the bytes straight to S3
-curl -s -X PUT '<upload_url>' \
-  -H 'Content-Type: image/jpeg' \
-  --data-binary @photo.jpg
+# 2. send the bytes straight to S3: one --form-string per entry of
+#    upload_fields, then the file last
+curl -s '<upload_url>' \
+  --form-string 'key=<upload_fields.key>' \
+  --form-string '<field>=<value>' \
+  -F 'file=@photo.jpg'
 
 # 3. report the upload; the file comes back ready
 curl -s -X POST http://localhost:8080/api/v1/files/<id>/complete
 
-# 4. queue work on it
+# 4. queue the edit: halve it, then save as WebP
 curl -s http://localhost:8080/api/v1/image/jobs \
   -H 'Content-Type: application/json' \
-  -d '{"file_id":"<id>","operation":"convert","params":{"format":"webp","quality":80}}'
+  -d '{"file_id":"<id>","operation":"pipeline","params":{"format":"webp","quality":80,"steps":[{"op":"resize","width":960,"height":540}]}}'
 ```
 
-Operations and their parameters:
+`pipeline` is the only operation. Its parameters:
 
-| Operation  | Required                | Optional                                     |
-| ---------- | ----------------------- | -------------------------------------------- |
-| `convert`  | `format`                | `quality`, `strip_metadata`                   |
-| `resize`   | `width` and/or `height` | `fit`, `format`, `quality`, `strip_metadata`  |
-| `compress` | –                       | `quality`, `format`                           |
+| Parameter        | Meaning                                                          |
+| ---------------- | ---------------------------------------------------------------- |
+| `steps`          | The edits, in order: `resize`, `crop`, `rotate`, `flip`, `pixelate`, `grayscale` (at most 50) |
+| `format`         | `jpeg`, `png` or `webp`; defaults to the source format, or PNG for GIF and BMP |
+| `quality`        | 1–100, default 82                                                 |
+| `target_bytes`   | Pick the highest quality whose output fits under this            |
+| `strip_metadata` | Drop EXIF and other metadata                                     |
 
-`fit` is one of `contain`, `cover` or `fill`; `cover` and `fill` need both
-dimensions. Output formats are `jpeg`, `png` and `webp`.
+Each step's fields are documented on `ImageStep` in
+`internal/contracts/contracts.go`. Accepted uploads are JPEG, PNG, WebP, GIF
+and BMP.
 
 ## Layout
 

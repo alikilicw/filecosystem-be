@@ -131,15 +131,6 @@ func (s *FileService) Get(ctx context.Context, id uuid.UUID) (domain.File, error
 	return s.files.Get(ctx, id)
 }
 
-// PreviewURL links to the stored original. It refuses a file the client has not
-// reported uploading, since there may be no object behind the key at all.
-func (s *FileService) PreviewURL(ctx context.Context, file domain.File) (string, error) {
-	if !file.IsUsable() {
-		return "", fmt.Errorf("%w: file %s is not ready", domain.ErrInvalidInput, file.ID)
-	}
-	return s.storage.ObjectURL(ctx, file.StorageKey)
-}
-
 // PurgeExpired drops files past their TTL along with their derived results.
 func (s *FileService) PurgeExpired(ctx context.Context, limit int) (int, error) {
 	keys, err := s.files.DeleteExpired(ctx, limit)

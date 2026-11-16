@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type jobDocument struct {
@@ -59,29 +58,6 @@ func (r *JobRepository) Get(ctx context.Context, id uuid.UUID) (domain.Job, erro
 		return domain.Job{}, fmt.Errorf("select job: %w", err)
 	}
 	return fromJobDocument(doc)
-}
-
-func (r *JobRepository) ListByFile(ctx context.Context, fileID uuid.UUID) ([]domain.Job, error) {
-	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
-	cursor, err := r.jobs.Find(ctx, bson.M{"file_id": fileID.String()}, opts)
-	if err != nil {
-		return nil, fmt.Errorf("select jobs: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	jobs := make([]domain.Job, 0)
-	for cursor.Next(ctx) {
-		var doc jobDocument
-		if err := cursor.Decode(&doc); err != nil {
-			return nil, fmt.Errorf("scan job: %w", err)
-		}
-		job, err := fromJobDocument(doc)
-		if err != nil {
-			return nil, err
-		}
-		jobs = append(jobs, job)
-	}
-	return jobs, cursor.Err()
 }
 
 // ApplyResult writes the terminal state reported by a worker. Already finished

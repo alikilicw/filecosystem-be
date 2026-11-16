@@ -86,54 +86,6 @@ func (s *Server) handleCompleteUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"file": file})
 }
 
-func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseUUID(w, chi.URLParam(r, "fileID"), "file_id")
-	if !ok {
-		return
-	}
-
-	file, err := s.files.Get(r.Context(), id)
-	if err != nil {
-		writeServiceError(w, s.log, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"file": file})
-}
-
-func (s *Server) handleFilePreview(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseUUID(w, chi.URLParam(r, "fileID"), "file_id")
-	if !ok {
-		return
-	}
-
-	file, err := s.files.Get(r.Context(), id)
-	if err != nil {
-		writeServiceError(w, s.log, err)
-		return
-	}
-
-	url, err := s.files.PreviewURL(r.Context(), file)
-	if err != nil {
-		writeServiceError(w, s.log, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"url": url})
-}
-
-func (s *Server) handleListFileJobs(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseUUID(w, chi.URLParam(r, "fileID"), "file_id")
-	if !ok {
-		return
-	}
-
-	jobs, err := s.images.ListJobsByFile(r.Context(), id)
-	if err != nil {
-		writeServiceError(w, s.log, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
-}
-
 type createImageJobRequest struct {
 	FileID    string                `json:"file_id"`
 	Operation contracts.Operation   `json:"operation"`

@@ -15,11 +15,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const (
-	defaultLossyQuality = 82
-	compressQuality     = 75
-	maxDimension        = 12000
-)
+const defaultLossyQuality = 82
 
 type CreateJobInput struct {
 	FileID    uuid.UUID
@@ -120,18 +116,6 @@ func (s *ImageService) GetJob(ctx context.Context, id uuid.UUID) (JobView, error
 	return s.view(ctx, job), nil
 }
 
-func (s *ImageService) ListJobsByFile(ctx context.Context, fileID uuid.UUID) ([]JobView, error) {
-	jobs, err := s.jobs.ListByFile(ctx, fileID)
-	if err != nil {
-		return nil, err
-	}
-	views := make([]JobView, 0, len(jobs))
-	for _, job := range jobs {
-		views = append(views, s.view(ctx, job))
-	}
-	return views, nil
-}
-
 // DownloadURL links to the result of a finished job so the browser saves it.
 func (s *ImageService) DownloadURL(ctx context.Context, id uuid.UUID) (string, error) {
 	job, err := s.jobs.Get(ctx, id)
@@ -160,72 +144,20 @@ func (s *ImageService) view(ctx context.Context, job domain.Job) JobView {
 
 // normalizeParams fills in defaults and rejects combinations the workers cannot
 // execute, so an invalid request fails at the HTTP edge instead of in a worker.
+// The editor sends every export as a pipeline job, so that is the only
+// operation there is.
 func normalizeParams(op contracts.Operation, p contracts.ImageParams, sourceMime string) (contracts.ImageParams, error) {
-	out := contracts.ImageParams{StripMetadata: p.StripMetadata}
+	if op != contracts.OpPipeline {
+		return contracts.ImageParams{}, fmt.Errorf("%w: unknown operation %q", domain.ErrUnsupported, op)
+	}
 
 	fallbackFormat := contracts.FormatFromMime(sourceMime)
 	if fallbackFormat == "" {
-		// GIF, BMP and TIFF inputs cannot be re-encoded as themselves, so PNG
-		// is used as the lossless default.
+		// GIF and BMP inputs cannot be re-encoded as themselves, so PNG is used
+		// as the lossless default.
 		fallbackFormat = contracts.FormatPNG
 	}
-
-	switch op {
-	case contracts.OpConvert:
-		if p.Format == "" {
-			return out, fmt.Errorf("%w: format is required for convert", domain.ErrInvalidInput)
-		}
-		format, _, ok := resolveFormat(p.Format)
-		if !ok {
-			return out, fmt.Errorf("%w: unsupported target format %q", domain.ErrUnsupported, p.Format)
-		}
-		out.Format = format
-		out.Quality = clampQuality(p.Quality, defaultLossyQuality)
-
-	case contracts.OpResize:
-		if p.Width <= 0 && p.Height <= 0 {
-			return out, fmt.Errorf("%w: width or height is required for resize", domain.ErrInvalidInput)
-		}
-		if p.Width > maxDimension || p.Height > maxDimension {
-			return out, fmt.Errorf("%w: dimensions may not exceed %d px", domain.ErrInvalidInput, maxDimension)
-		}
-		if p.Width < 0 || p.Height < 0 {
-			return out, fmt.Errorf("%w: dimensions may not be negative", domain.ErrInvalidInput)
-		}
-		fit := p.Fit
-		if fit == "" {
-			fit = contracts.FitContain
-		}
-		if fit != contracts.FitContain && fit != contracts.FitCover && fit != contracts.FitFill {
-			return out, fmt.Errorf("%w: unsupported fit %q", domain.ErrInvalidInput, p.Fit)
-		}
-		if fit != contracts.FitContain && (p.Width <= 0 || p.Height <= 0) {
-			return out, fmt.Errorf("%w: fit %q requires both width and height", domain.ErrInvalidInput, fit)
-		}
-		out.Width, out.Height, out.Fit = p.Width, p.Height, fit
-		out.Format, out.Quality = resolveOutputFormat(p.Format, fallbackFormat, p.Quality)
-		if out.Format == "" {
-			return out, fmt.Errorf("%w: unsupported target format %q", domain.ErrUnsupported, p.Format)
-		}
-
-	case contracts.OpCompress:
-		out.Format, out.Quality = resolveOutputFormat(p.Format, fallbackFormat, p.Quality)
-		if out.Format == "" {
-			return out, fmt.Errorf("%w: unsupported target format %q", domain.ErrUnsupported, p.Format)
-		}
-		if p.Quality == 0 {
-			out.Quality = compressQuality
-		}
-		out.StripMetadata = true
-
-	case contracts.OpPipeline:
-		return normalizePipeline(p, fallbackFormat)
-
-	default:
-		return out, fmt.Errorf("%w: unknown operation %q", domain.ErrUnsupported, op)
-	}
-
-	return out, nil
+	return normalizePipeline(p, fallbackFormat)
 }
 
 func resolveOutputFormat(requested, fallback string, quality int) (string, int) {
