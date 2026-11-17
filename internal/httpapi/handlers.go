@@ -86,62 +86,84 @@ func (s *Server) handleCompleteUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"file": file})
 }
 
-type createImageJobRequest struct {
-	FileID    string                `json:"file_id"`
-	Operation contracts.Operation   `json:"operation"`
-	Params    contracts.ImageParams `json:"params"`
+type createSessionRequest struct {
+	FileID string `json:"file_id"`
 }
 
-func (s *Server) handleCreateImageJob(w http.ResponseWriter, r *http.Request) {
-	var req createImageJobRequest
+func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	var req createSessionRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body", err.Error())
 		return
 	}
-
 	fileID, ok := parseUUID(w, req.FileID, "file_id")
 	if !ok {
 		return
 	}
+	session, err := s.sessions.Create(r.Context(), fileID)
+	if err != nil {
+		writeServiceError(w, s.log, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"session": session})
+}
 
-	job, err := s.images.CreateJob(r.Context(), service.CreateJobInput{
-		FileID:    fileID,
-		Operation: req.Operation,
-		Params:    req.Params,
+func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	s.sessionAction(w, r, http.StatusOK, s.sessions.Get)
+}
+
+type editSessionRequest struct {
+	Step   *contracts.ImageStep  `json:"step"`
+	Encode *service.EncodeChange `json:"encode"`
+}
+
+func (s *Server) handleEditSession(w http.ResponseWriter, r *http.Request) {
+	var req editSessionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", err.Error())
+		return
+	}
+	if req.Step == nil && req.Encode == nil {
+		writeError(w, http.StatusBadRequest, "invalid_input", "step or encode is required")
+		return
+	}
+	s.sessionAction(w, r, http.StatusAccepted, func(ctx context.Context, id uuid.UUID) (service.SessionView, error) {
+		return s.sessions.Edit(ctx, id, service.EditInput{Step: req.Step, Encode: req.Encode})
 	})
-	if err != nil {
-		writeServiceError(w, s.log, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 }
 
-func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseUUID(w, chi.URLParam(r, "jobID"), "job_id")
+func (s *Server) handleUndoSession(w http.ResponseWriter, r *http.Request) {
+	s.sessionAction(w, r, http.StatusOK, s.sessions.Undo)
+}
+
+func (s *Server) handleResetSession(w http.ResponseWriter, r *http.Request) {
+	s.sessionAction(w, r, http.StatusOK, s.sessions.Reset)
+}
+
+func (s *Server) handleDownloadSession(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseUUID(w, chi.URLParam(r, "sessionID"), "session_id")
 	if !ok {
 		return
 	}
-
-	job, err := s.images.GetJob(r.Context(), id)
-	if err != nil {
-		writeServiceError(w, s.log, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"job": job})
-}
-
-func (s *Server) handleDownloadJob(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseUUID(w, chi.URLParam(r, "jobID"), "job_id")
-	if !ok {
-		return
-	}
-
-	url, err := s.images.DownloadURL(r.Context(), id)
+	url, err := s.sessions.DownloadURL(r.Context(), id)
 	if err != nil {
 		writeServiceError(w, s.log, err)
 		return
 	}
 	http.Redirect(w, r, url, http.StatusFound)
+}
+
+func (s *Server) sessionAction(w http.ResponseWriter, r *http.Request, status int, action func(context.Context, uuid.UUID) (service.SessionView, error)) {
+	id, ok := parseUUID(w, chi.URLParam(r, "sessionID"), "session_id")
+	if !ok {
+		return
+	}
+	session, err := action(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, s.log, err)
+		return
+	}
+	writeJSON(w, status, map[string]any{"session": session})
 }
 
 func decodeJSON(r *http.Request, dst any) error {

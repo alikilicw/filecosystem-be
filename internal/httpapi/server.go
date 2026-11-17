@@ -17,23 +17,23 @@ import (
 )
 
 type Server struct {
-	cfg    config.Config
-	log    *slog.Logger
-	files  *service.FileService
-	images *service.ImageService
-	queue  *queue.Client
-	mongo  *db.Client
+	cfg      config.Config
+	log      *slog.Logger
+	files    *service.FileService
+	sessions *service.SessionService
+	queue    *queue.Client
+	mongo    *db.Client
 }
 
 func NewServer(
 	cfg config.Config,
 	log *slog.Logger,
 	files *service.FileService,
-	images *service.ImageService,
+	sessions *service.SessionService,
 	q *queue.Client,
 	mongo *db.Client,
 ) *Server {
-	return &Server{cfg: cfg, log: log, files: files, images: images, queue: q, mongo: mongo}
+	return &Server{cfg: cfg, log: log, files: files, sessions: sessions, queue: q, mongo: mongo}
 }
 
 // Handler builds the router. ctx bounds background work such as the rate
@@ -78,13 +78,15 @@ func (s *Server) Handler(ctx context.Context) http.Handler {
 
 		// Each file family gets its own namespace so video and document
 		// endpoints can be added without reshaping the existing routes.
-		r.Route("/image", func(r chi.Router) {
-			r.Post("/jobs", s.handleCreateImageJob)
-		})
-
-		r.Route("/jobs", func(r chi.Router) {
-			r.Get("/{jobID}", s.handleGetJob)
-			r.Get("/{jobID}/download", s.handleDownloadJob)
+		// An editing session holds the versions of one upload. Only one
+		// operation runs at a time; a request made while one runs gets 409.
+		r.Route("/image/sessions", func(r chi.Router) {
+			r.Post("/", s.handleCreateSession)
+			r.Get("/{sessionID}", s.handleGetSession)
+			r.Post("/{sessionID}/edits", s.handleEditSession)
+			r.Post("/{sessionID}/undo", s.handleUndoSession)
+			r.Post("/{sessionID}/reset", s.handleResetSession)
+			r.Get("/{sessionID}/download", s.handleDownloadSession)
 		})
 	})
 

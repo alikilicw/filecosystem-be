@@ -7,18 +7,17 @@ import (
 	"log/slog"
 
 	"github.com/alikilicw/filecosystem-be/internal/contracts"
-	"github.com/alikilicw/filecosystem-be/internal/repository"
 )
 
 // ResultConsumer applies worker outcomes to the database. The API owns the
-// schema, so workers never touch Postgres directly.
+// schema, so workers never touch MongoDB directly.
 type ResultConsumer struct {
-	jobs *repository.JobRepository
-	log  *slog.Logger
+	sessions *SessionService
+	log      *slog.Logger
 }
 
-func NewResultConsumer(jobs *repository.JobRepository, log *slog.Logger) *ResultConsumer {
-	return &ResultConsumer{jobs: jobs, log: log}
+func NewResultConsumer(sessions *SessionService, log *slog.Logger) *ResultConsumer {
+	return &ResultConsumer{sessions: sessions, log: log}
 }
 
 func (c *ResultConsumer) Handle(ctx context.Context, body []byte) error {
@@ -30,7 +29,7 @@ func (c *ResultConsumer) Handle(ctx context.Context, body []byte) error {
 		return fmt.Errorf("job result is missing job_id")
 	}
 
-	if err := c.jobs.ApplyResult(ctx, result); err != nil {
+	if err := c.sessions.ApplyResult(ctx, result); err != nil {
 		return err
 	}
 
@@ -38,7 +37,6 @@ func (c *ResultConsumer) Handle(ctx context.Context, body []byte) error {
 		"job_id", result.JobID,
 		"status", result.Status,
 		"result_size", result.ResultSize,
-		"error", result.Error,
 	)
 	return nil
 }

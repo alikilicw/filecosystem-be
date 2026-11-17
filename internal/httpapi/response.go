@@ -43,6 +43,8 @@ func writeServiceError(w http.ResponseWriter, log *slog.Logger, err error) {
 		writeError(w, http.StatusNotFound, "not_found", "The requested resource does not exist.")
 	case errors.Is(err, domain.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, "invalid_input", cleanMessage(err))
+	case errors.Is(err, domain.ErrBusy):
+		writeError(w, http.StatusConflict, "busy", "Another operation is still running on this image.")
 	case errors.Is(err, domain.ErrUnsupported):
 		writeError(w, http.StatusUnsupportedMediaType, "unsupported", cleanMessage(err))
 	case errors.Is(err, queue.ErrNotConnected):

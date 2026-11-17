@@ -65,22 +65,23 @@ func run(log *slog.Logger) error {
 
 	fileRepo := repository.NewFileRepository(mongo)
 	jobRepo := repository.NewJobRepository(mongo)
+	sessionRepo := repository.NewSessionRepository(mongo)
 
 	broker := queue.New(cfg.RabbitURL, log)
-	broker.RegisterConsumer(contracts.QueueJobResults, 16, 4, service.NewResultConsumer(jobRepo, log).Handle)
+	sessionService := service.NewSessionService(fileRepo, sessionRepo, jobRepo, broker, store, log)
+	broker.RegisterConsumer(contracts.QueueJobResults, 16, 4, service.NewResultConsumer(sessionService, log).Handle)
 	if err := broker.Start(ctx); err != nil {
 		return err
 	}
 	defer broker.Close()
 
 	fileService := service.NewFileService(fileRepo, store, log, cfg.MaxUploadBytes, cfg.FileTTL, cfg.UploadTTL)
-	imageService := service.NewImageService(fileRepo, jobRepo, broker, store, log)
 
 	go runCleanup(ctx, fileService, log)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewServer(cfg, log, fileService, imageService, broker, mongo).Handler(ctx),
+		Handler:           httpapi.NewServer(cfg, log, fileService, sessionService, broker, mongo).Handler(ctx),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      3 * time.Minute,
 		IdleTimeout:       2 * time.Minute,

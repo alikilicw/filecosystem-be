@@ -31,14 +31,16 @@ type fileDocument struct {
 }
 
 type FileRepository struct {
-	files *mongo.Collection
-	jobs  *mongo.Collection
+	files    *mongo.Collection
+	jobs     *mongo.Collection
+	sessions *mongo.Collection
 }
 
 func NewFileRepository(client *db.Client) *FileRepository {
 	return &FileRepository{
-		files: client.Collection(db.CollectionFiles),
-		jobs:  client.Collection(db.CollectionJobs),
+		files:    client.Collection(db.CollectionFiles),
+		jobs:     client.Collection(db.CollectionJobs),
+		sessions: client.Collection(db.CollectionSessions),
 	}
 }
 
@@ -117,7 +119,9 @@ func (r *FileRepository) DeleteAbandoned(ctx context.Context, cutoff time.Time, 
 }
 
 // DeleteExpired removes metadata for files past their TTL and returns every
-// storage key the caller should purge, including the results derived from them.
+// storage key the caller should purge: the upload, and every intermediate,
+// preview and result its editing sessions made. Keys may repeat (a version
+// without a step shares its parent's intermediate); deleting twice is harmless.
 func (r *FileRepository) DeleteExpired(ctx context.Context, limit int) ([]string, error) {
 	opts := options.Find().SetSort(bson.D{{Key: "expires_at", Value: 1}}).SetLimit(int64(limit))
 	cursor, err := r.files.Find(ctx, bson.M{"expires_at": bson.M{"$lt": time.Now().UTC()}}, opts)
@@ -145,10 +149,7 @@ func (r *FileRepository) DeleteExpired(ctx context.Context, limit int) ([]string
 		return nil, nil
 	}
 
-	resultCursor, err := r.jobs.Find(ctx, bson.M{
-		"file_id":    bson.M{"$in": ids},
-		"result_key": bson.M{"$ne": ""},
-	})
+	resultCursor, err := r.jobs.Find(ctx, bson.M{"file_id": bson.M{"$in": ids}})
 	if err != nil {
 		return nil, fmt.Errorf("select expired results: %w", err)
 	}
@@ -159,7 +160,11 @@ func (r *FileRepository) DeleteExpired(ctx context.Context, limit int) ([]string
 		if err := resultCursor.Decode(&job); err != nil {
 			return nil, fmt.Errorf("scan expired result: %w", err)
 		}
-		keys = append(keys, job.ResultKey)
+		for _, key := range []string{job.ResultKey, job.IntermediateKey, job.PreviewKey} {
+			if key != "" {
+				keys = append(keys, key)
+			}
+		}
 	}
 	if err := resultCursor.Err(); err != nil {
 		return nil, err
@@ -167,6 +172,9 @@ func (r *FileRepository) DeleteExpired(ctx context.Context, limit int) ([]string
 
 	if _, err := r.jobs.DeleteMany(ctx, bson.M{"file_id": bson.M{"$in": ids}}); err != nil {
 		return nil, fmt.Errorf("delete expired jobs: %w", err)
+	}
+	if _, err := r.sessions.DeleteMany(ctx, bson.M{"file_id": bson.M{"$in": ids}}); err != nil {
+		return nil, fmt.Errorf("delete expired sessions: %w", err)
 	}
 	if _, err := r.files.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}}); err != nil {
 		return nil, fmt.Errorf("delete expired files: %w", err)

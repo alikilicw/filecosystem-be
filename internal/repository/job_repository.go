@@ -12,25 +12,33 @@ import (
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type jobDocument struct {
-	ID         string                `bson:"_id"`
-	FileID     string                `bson:"file_id"`
-	Kind       contracts.Kind        `bson:"kind"`
-	Operation  contracts.Operation   `bson:"operation"`
-	Status     contracts.Status      `bson:"status"`
-	Params     contracts.ImageParams `bson:"params"`
-	ResultName string                `bson:"result_name"`
-	ResultKey  string                `bson:"result_key"`
-	ResultSize int64                 `bson:"result_size"`
-	ResultMime string                `bson:"result_mime"`
-	Width      int                   `bson:"width"`
-	Height     int                   `bson:"height"`
-	Error      string                `bson:"error"`
-	CreatedAt  time.Time             `bson:"created_at"`
-	UpdatedAt  time.Time             `bson:"updated_at"`
-	FinishedAt *time.Time            `bson:"finished_at,omitempty"`
+	ID              string               `bson:"_id"`
+	FileID          string               `bson:"file_id"`
+	SessionID       string               `bson:"session_id"`
+	ParentID        string               `bson:"parent_id,omitempty"`
+	Seq             int                  `bson:"seq"`
+	Kind            contracts.Kind       `bson:"kind"`
+	Operation       contracts.Operation  `bson:"operation"`
+	Status          contracts.Status     `bson:"status"`
+	Step            *contracts.ImageStep `bson:"step,omitempty"`
+	Encode          *contracts.Encode    `bson:"encode,omitempty"`
+	Animation       *contracts.Animation `bson:"animation,omitempty"`
+	IntermediateKey string               `bson:"intermediate_key"`
+	PreviewKey      string               `bson:"preview_key"`
+	ResultName      string               `bson:"result_name"`
+	ResultKey       string               `bson:"result_key"`
+	ResultSize      int64                `bson:"result_size"`
+	ResultMime      string               `bson:"result_mime"`
+	Width           int                  `bson:"width"`
+	Height          int                  `bson:"height"`
+	Error           string               `bson:"error"`
+	CreatedAt       time.Time            `bson:"created_at"`
+	UpdatedAt       time.Time            `bson:"updated_at"`
+	FinishedAt      *time.Time           `bson:"finished_at,omitempty"`
 }
 
 type JobRepository struct {
@@ -60,12 +68,37 @@ func (r *JobRepository) Get(ctx context.Context, id uuid.UUID) (domain.Job, erro
 	return fromJobDocument(doc)
 }
 
-// ApplyResult writes the terminal state reported by a worker. Already finished
-// jobs are left untouched so a redelivered message cannot overwrite them.
-func (r *JobRepository) ApplyResult(ctx context.Context, res contracts.JobResult) error {
+// ListBySession returns every version of a session, oldest first.
+func (r *JobRepository) ListBySession(ctx context.Context, sessionID uuid.UUID) ([]domain.Job, error) {
+	opts := options.Find().SetSort(bson.D{{Key: "seq", Value: 1}}).SetLimit(contracts.MaxVersions + 1)
+	cursor, err := r.jobs.Find(ctx, bson.M{"session_id": sessionID.String()}, opts)
+	if err != nil {
+		return nil, fmt.Errorf("select session jobs: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var out []domain.Job
+	for cursor.Next(ctx) {
+		var doc jobDocument
+		if err := cursor.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("scan job: %w", err)
+		}
+		j, err := fromJobDocument(doc)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, cursor.Err()
+}
+
+// ApplyResult writes the terminal state reported by a worker and returns the
+// updated job. ok is false when the job had already finished, so a
+// redelivered message changes nothing.
+func (r *JobRepository) ApplyResult(ctx context.Context, res contracts.JobResult) (domain.Job, bool, error) {
 	id, err := uuid.Parse(res.JobID)
 	if err != nil {
-		return fmt.Errorf("parse job id %q: %w", res.JobID, err)
+		return domain.Job{}, false, fmt.Errorf("parse job id %q: %w", res.JobID, err)
 	}
 
 	finishedAt := res.FinishedAt
@@ -73,43 +106,47 @@ func (r *JobRepository) ApplyResult(ctx context.Context, res contracts.JobResult
 		finishedAt = time.Now().UTC()
 	}
 
-	_, err = r.jobs.UpdateOne(ctx,
-		bson.M{
-			"_id": id.String(),
-			"status": bson.M{"$nin": []contracts.Status{
-				contracts.StatusSucceeded,
-				contracts.StatusFailed,
-			}},
-		},
-		bson.M{"$set": bson.M{
-			"status":      res.Status,
-			"result_key":  res.ResultKey,
-			"result_name": res.ResultName,
-			"result_size": res.ResultSize,
-			"result_mime": res.ResultMime,
-			"width":       res.Width,
-			"height":      res.Height,
-			"error":       res.Error,
-			"finished_at": finishedAt,
-			"updated_at":  time.Now().UTC(),
-		}},
-	)
-	if err != nil {
-		return fmt.Errorf("update job result: %w", err)
+	set := bson.M{
+		"status":      res.Status,
+		"error":       res.Error,
+		"finished_at": finishedAt,
+		"updated_at":  time.Now().UTC(),
 	}
-	return nil
+	if res.Status == contracts.StatusSucceeded {
+		set["result_key"] = res.ResultKey
+		set["result_name"] = res.ResultName
+		set["result_size"] = res.ResultSize
+		set["result_mime"] = res.ResultMime
+		set["intermediate_key"] = res.IntermediateKey
+		set["preview_key"] = res.PreviewKey
+		set["width"] = res.Width
+		set["height"] = res.Height
+		set["animation"] = res.Animation
+		if res.Encode != nil {
+			set["encode"] = res.Encode
+		}
+	}
+
+	var doc jobDocument
+	err = r.jobs.FindOneAndUpdate(ctx,
+		bson.M{"_id": id.String(), "status": bson.M{"$nin": terminal}},
+		bson.M{"$set": set},
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return domain.Job{}, false, nil
+	}
+	if err != nil {
+		return domain.Job{}, false, fmt.Errorf("update job result: %w", err)
+	}
+	j, err := fromJobDocument(doc)
+	return j, err == nil, err
 }
 
 func (r *JobRepository) MarkFailed(ctx context.Context, id uuid.UUID, reason string) error {
 	now := time.Now().UTC()
 	_, err := r.jobs.UpdateOne(ctx,
-		bson.M{
-			"_id": id.String(),
-			"status": bson.M{"$nin": []contracts.Status{
-				contracts.StatusSucceeded,
-				contracts.StatusFailed,
-			}},
-		},
+		bson.M{"_id": id.String(), "status": bson.M{"$nin": terminal}},
 		bson.M{"$set": bson.M{
 			"status":      contracts.StatusFailed,
 			"error":       reason,
@@ -123,25 +160,37 @@ func (r *JobRepository) MarkFailed(ctx context.Context, id uuid.UUID, reason str
 	return nil
 }
 
+var terminal = []contracts.Status{contracts.StatusSucceeded, contracts.StatusFailed}
+
 func toJobDocument(j domain.Job) jobDocument {
-	return jobDocument{
-		ID:         j.ID.String(),
-		FileID:     j.FileID.String(),
-		Kind:       j.Kind,
-		Operation:  j.Operation,
-		Status:     j.Status,
-		Params:     j.Params,
-		ResultName: j.ResultName,
-		ResultKey:  j.ResultKey,
-		ResultSize: j.ResultSize,
-		ResultMime: j.ResultMime,
-		Width:      j.Width,
-		Height:     j.Height,
-		Error:      j.Error,
-		CreatedAt:  j.CreatedAt,
-		UpdatedAt:  j.UpdatedAt,
-		FinishedAt: j.FinishedAt,
+	doc := jobDocument{
+		ID:              j.ID.String(),
+		FileID:          j.FileID.String(),
+		SessionID:       j.SessionID.String(),
+		Seq:             j.Seq,
+		Kind:            j.Kind,
+		Operation:       j.Operation,
+		Status:          j.Status,
+		Step:            j.Step,
+		Encode:          j.Encode,
+		Animation:       j.Animation,
+		IntermediateKey: j.IntermediateKey,
+		PreviewKey:      j.PreviewKey,
+		ResultName:      j.ResultName,
+		ResultKey:       j.ResultKey,
+		ResultSize:      j.ResultSize,
+		ResultMime:      j.ResultMime,
+		Width:           j.Width,
+		Height:          j.Height,
+		Error:           j.Error,
+		CreatedAt:       j.CreatedAt,
+		UpdatedAt:       j.UpdatedAt,
+		FinishedAt:      j.FinishedAt,
 	}
+	if j.ParentID != uuid.Nil {
+		doc.ParentID = j.ParentID.String()
+	}
+	return doc
 }
 
 func fromJobDocument(doc jobDocument) (domain.Job, error) {
@@ -153,22 +202,39 @@ func fromJobDocument(doc jobDocument) (domain.Job, error) {
 	if err != nil {
 		return domain.Job{}, fmt.Errorf("parse file id: %w", err)
 	}
+	sessionID, err := uuid.Parse(doc.SessionID)
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("parse session id: %w", err)
+	}
+	var parentID uuid.UUID
+	if doc.ParentID != "" {
+		if parentID, err = uuid.Parse(doc.ParentID); err != nil {
+			return domain.Job{}, fmt.Errorf("parse parent id: %w", err)
+		}
+	}
 	return domain.Job{
-		ID:         id,
-		FileID:     fileID,
-		Kind:       doc.Kind,
-		Operation:  doc.Operation,
-		Status:     doc.Status,
-		Params:     doc.Params,
-		ResultName: doc.ResultName,
-		ResultKey:  doc.ResultKey,
-		ResultSize: doc.ResultSize,
-		ResultMime: doc.ResultMime,
-		Width:      doc.Width,
-		Height:     doc.Height,
-		Error:      doc.Error,
-		CreatedAt:  doc.CreatedAt,
-		UpdatedAt:  doc.UpdatedAt,
-		FinishedAt: doc.FinishedAt,
+		ID:              id,
+		FileID:          fileID,
+		SessionID:       sessionID,
+		ParentID:        parentID,
+		Seq:             doc.Seq,
+		Kind:            doc.Kind,
+		Operation:       doc.Operation,
+		Status:          doc.Status,
+		Step:            doc.Step,
+		Encode:          doc.Encode,
+		Animation:       doc.Animation,
+		IntermediateKey: doc.IntermediateKey,
+		PreviewKey:      doc.PreviewKey,
+		ResultName:      doc.ResultName,
+		ResultKey:       doc.ResultKey,
+		ResultSize:      doc.ResultSize,
+		ResultMime:      doc.ResultMime,
+		Width:           doc.Width,
+		Height:          doc.Height,
+		Error:           doc.Error,
+		CreatedAt:       doc.CreatedAt,
+		UpdatedAt:       doc.UpdatedAt,
+		FinishedAt:      doc.FinishedAt,
 	}, nil
 }

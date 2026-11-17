@@ -57,6 +57,10 @@ var inputMimes = map[string]inputMime{
 	"image/webp": {KindImage, ".webp"},
 	"image/gif":  {KindImage, ".gif"},
 	"image/bmp":  {KindImage, ".bmp"},
+	"image/tiff": {KindImage, ".tiff"},
+	"image/avif": {KindImage, ".avif"},
+	"image/heic": {KindImage, ".heic"},
+	"image/heif": {KindImage, ".heif"},
 }
 
 // InputMime resolves a content type to the family that handles it and the
@@ -79,13 +83,18 @@ func normalizeMime(mime string) string {
 	return strings.ToLower(strings.TrimSpace(mime))
 }
 
-// Operation is the transformation requested for a job.
+// Operation is what a job asks the worker to do.
 type Operation string
 
-// OpPipeline replays the image editor's edits (Params.Steps) on the original,
-// at full resolution, then encodes it once. It is the only image operation:
-// resizing, compressing and converting are all steps or output settings of it.
-const OpPipeline Operation = "pipeline"
+const (
+	// OpSource opens an upload: the worker reads the original, works out how
+	// it was encoded, and stores the lossless intermediate and the preview
+	// every later version starts from. Its result is the original itself.
+	OpSource Operation = "source"
+	// OpEdit makes one version from its parent's intermediate: it applies at
+	// most one step, then encodes the result with the version's settings.
+	OpEdit Operation = "edit"
+)
 
 // Status is the lifecycle state of a job.
 type Status string
@@ -97,19 +106,7 @@ const (
 	StatusFailed     Status = "failed"
 )
 
-// ImageParams carries a pipeline job's output settings and its edits.
-type ImageParams struct {
-	Format        string `json:"format,omitempty" bson:"format,omitempty"`
-	Quality       int    `json:"quality,omitempty" bson:"quality,omitempty"`
-	StripMetadata bool   `json:"strip_metadata,omitempty" bson:"strip_metadata,omitempty"`
-
-	// Steps run in order; TargetBytes, when set, makes the encoder pick the
-	// highest quality whose output fits under it.
-	Steps       []ImageStep `json:"steps,omitempty" bson:"steps,omitempty"`
-	TargetBytes int64       `json:"target_bytes,omitempty" bson:"target_bytes,omitempty"`
-}
-
-// StepOp is one edit in a pipeline.
+// StepOp is one edit.
 type StepOp string
 
 const (
@@ -121,11 +118,9 @@ const (
 	StepGrayscale StepOp = "grayscale"
 )
 
-// MaxPipelineSteps bounds how much work one job can ask for.
-const MaxPipelineSteps = 50
-
-// ImageStep is one edit, in the pixels of the image as it is when the step
-// runs (after the steps before it). Which fields apply depends on Op:
+// ImageStep is one edit, in the pixels of the version it is applied to (one
+// frame, for an animation: every frame gets the same edit). Which fields
+// apply depends on Op:
 //
 //	resize     Width, Height (exact output size)
 //	crop       X, Y, Width, Height
@@ -157,6 +152,10 @@ const (
 	FormatJPEG = "jpeg"
 	FormatPNG  = "png"
 	FormatWebP = "webp"
+	FormatGIF  = "gif"
+	FormatTIFF = "tiff"
+	FormatAVIF = "avif"
+	FormatHEIC = "heic"
 )
 
 // FormatInfo resolves a target format name to its canonical extension and MIME
@@ -169,48 +168,150 @@ func FormatInfo(format string) (ext, mime string, ok bool) {
 		return ".png", "image/png", true
 	case FormatWebP:
 		return ".webp", "image/webp", true
+	case FormatGIF:
+		return ".gif", "image/gif", true
+	case FormatTIFF, "tif":
+		return ".tiff", "image/tiff", true
+	case FormatAVIF:
+		return ".avif", "image/avif", true
+	case FormatHEIC, "heif":
+		return ".heic", "image/heic", true
 	}
 	return "", "", false
 }
 
+// CanonicalFormat folds an alias ("jpg", "tif", "heif") to the name used
+// everywhere else, or returns "" for a format no worker can write.
+func CanonicalFormat(format string) string {
+	_, mime, ok := FormatInfo(format)
+	if !ok {
+		return ""
+	}
+	return FormatFromMime(mime)
+}
+
 // FormatFromMime is the inverse of FormatInfo, used when a job keeps the
-// source format instead of converting it. It returns "" for unencodable inputs.
+// source format. It returns "" for inputs no worker can write (BMP).
 func FormatFromMime(mime string) string {
-	switch strings.ToLower(strings.TrimSpace(mime)) {
+	switch normalizeMime(mime) {
 	case "image/jpeg":
 		return FormatJPEG
 	case "image/png":
 		return FormatPNG
 	case "image/webp":
 		return FormatWebP
+	case "image/gif":
+		return FormatGIF
+	case "image/tiff":
+		return FormatTIFF
+	case "image/avif":
+		return FormatAVIF
+	case "image/heic", "image/heif":
+		return FormatHEIC
 	}
 	return ""
 }
 
+// HasQuality reports whether a format has a lossy quality setting.
+func HasQuality(format string) bool {
+	switch format {
+	case FormatJPEG, FormatWebP, FormatAVIF, FormatHEIC:
+		return true
+	}
+	return false
+}
+
+// TIFF compressions the workers can write.
+var TIFFCompressions = []string{"none", "lzw", "deflate", "packbits", "jpeg", "zstd", "webp"}
+
+// Encode is how a version is written. The source job reads it off the
+// original, and every later version inherits its parent's unless the user
+// changes it, so an edit never re-encodes a file any differently from how it
+// came in. Fields that do not apply to Format are ignored.
+type Encode struct {
+	Format string `json:"format" bson:"format"`
+	// Quality is 1–100 for lossy encodes, and the quantiser's quality for a
+	// PNG written with Palette.
+	Quality int `json:"quality,omitempty" bson:"quality,omitempty"`
+	// Lossless is WebP's VP8L and AVIF/HEIC's lossless mode.
+	Lossless bool `json:"lossless,omitempty" bson:"lossless,omitempty"`
+	// Subsample is the JPEG chroma subsampling: "on" (4:2:0) or "off" (4:4:4).
+	Subsample string `json:"subsample,omitempty" bson:"subsample,omitempty"`
+	// Progressive is a progressive JPEG or an interlaced PNG.
+	Progressive bool `json:"progressive,omitempty" bson:"progressive,omitempty"`
+	// Palette quantises a PNG to at most 256 colours. It is lossy, so it is
+	// only ever on because the user asked to compress.
+	Palette bool `json:"palette,omitempty" bson:"palette,omitempty"`
+	// Compression is the TIFF compression, one of TIFFCompressions.
+	Compression string `json:"compression,omitempty" bson:"compression,omitempty"`
+	// KeepMetadata carries EXIF, XMP and the ICC profile over.
+	KeepMetadata bool `json:"keep_metadata" bson:"keep_metadata"`
+	// TargetBytes, when set, makes the encoder search for the highest quality
+	// that fits under it. The quality it lands on is reported back.
+	TargetBytes int64 `json:"target_bytes,omitempty" bson:"target_bytes,omitempty"`
+}
+
+// Animation describes a multi-frame image. The intermediate holds the frames
+// stacked top to bottom, and a PNG has nowhere to keep the timing, so it
+// travels with the version instead.
+type Animation struct {
+	Frames int `json:"frames" bson:"frames"`
+	// FrameHeight is one frame's height in the stacked intermediate.
+	FrameHeight int `json:"frame_height" bson:"frame_height"`
+	// Delays is each frame's duration in milliseconds.
+	Delays []int `json:"delays,omitempty" bson:"delays,omitempty"`
+	// Loop is how many times it plays; 0 is forever.
+	Loop int `json:"loop" bson:"loop"`
+}
+
+// MaxVersions bounds how many edits one session can hold.
+const MaxVersions = 100
+
 // JobMessage is published by the API and consumed by a worker.
 type JobMessage struct {
-	JobID      string      `json:"job_id"`
-	FileID     string      `json:"file_id"`
-	Kind       Kind        `json:"kind"`
-	Operation  Operation   `json:"operation"`
-	SourceKey  string      `json:"source_key"`
-	SourceName string      `json:"source_name"`
-	SourceMime string      `json:"source_mime"`
-	Params     ImageParams `json:"params"`
-	CreatedAt  time.Time   `json:"created_at"`
+	JobID      string    `json:"job_id"`
+	FileID     string    `json:"file_id"`
+	SessionID  string    `json:"session_id"`
+	Seq        int       `json:"seq"`
+	Kind       Kind      `json:"kind"`
+	Operation  Operation `json:"operation"`
+	SourceKey  string    `json:"source_key"`
+	SourceName string    `json:"source_name"`
+	SourceMime string    `json:"source_mime"`
+	// InputKey is what the job starts from: the original for OpSource, the
+	// parent version's intermediate for OpEdit.
+	InputKey string `json:"input_key"`
+	// Animation is the input's frame layout, when it has more than one.
+	Animation *Animation `json:"animation,omitempty"`
+	// Step is the one edit an OpEdit job applies; nil when only the encoding
+	// changes, in which case the parent's intermediate is reused as is.
+	Step *ImageStep `json:"step,omitempty"`
+	// Encode is how an OpEdit job writes its result. OpSource ignores it.
+	Encode *Encode `json:"encode,omitempty"`
+	// OutputPrefix is where the job stores what it makes, ending in "/".
+	OutputPrefix string    `json:"output_prefix"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // JobResult is published by a worker once processing finishes and consumed by
 // the API, which owns the database.
 type JobResult struct {
-	JobID      string    `json:"job_id"`
-	Status     Status    `json:"status"`
-	ResultKey  string    `json:"result_key,omitempty"`
-	ResultName string    `json:"result_name,omitempty"`
-	ResultSize int64     `json:"result_size,omitempty"`
-	ResultMime string    `json:"result_mime,omitempty"`
-	Width      int       `json:"width,omitempty"`
-	Height     int       `json:"height,omitempty"`
+	JobID           string `json:"job_id"`
+	Status          Status `json:"status"`
+	ResultKey       string `json:"result_key,omitempty"`
+	ResultName      string `json:"result_name,omitempty"`
+	ResultSize      int64  `json:"result_size,omitempty"`
+	ResultMime      string `json:"result_mime,omitempty"`
+	IntermediateKey string `json:"intermediate_key,omitempty"`
+	PreviewKey      string `json:"preview_key,omitempty"`
+	// Width and Height are one frame's size.
+	Width     int        `json:"width,omitempty"`
+	Height    int        `json:"height,omitempty"`
+	Animation *Animation `json:"animation,omitempty"`
+	// Encode is how the result was actually written: for OpSource, the
+	// settings read off the original; for OpEdit, the requested ones with the
+	// quality a size target landed on.
+	Encode     *Encode   `json:"encode,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	FinishedAt time.Time `json:"finished_at"`
 }

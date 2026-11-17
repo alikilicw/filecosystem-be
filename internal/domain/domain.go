@@ -12,6 +12,9 @@ var (
 	ErrNotFound     = errors.New("not found")
 	ErrUnsupported  = errors.New("unsupported")
 	ErrInvalidInput = errors.New("invalid input")
+	// ErrBusy means a session already has an operation running; only one runs
+	// at a time.
+	ErrBusy = errors.New("busy")
 )
 
 // File is an upload and everything known about it. Every field but Status and
@@ -34,23 +37,60 @@ type File struct {
 // nobody has reported uploading has no object behind it yet.
 func (f File) IsUsable() bool { return f.Status == contracts.FileStatusReady }
 
+// Session is one editing session on an uploaded image. Its versions are jobs:
+// version 0 opens the upload, and every later one is made from its parent's
+// intermediate. Head is the version the user is looking at; undo and reset
+// only move it.
+type Session struct {
+	ID       uuid.UUID
+	FileID   uuid.UUID
+	SourceID uuid.UUID
+	HeadID   uuid.UUID
+	// NextSeq is the number the next version gets.
+	NextSeq int
+	// LockJobID is the job running now, or uuid.Nil. The lock lapses at
+	// LockExpiresAt so a lost worker cannot freeze a session for good.
+	LockJobID     uuid.UUID
+	LockExpiresAt time.Time
+	// LastError is why the most recent operation failed, cleared by the next.
+	LastError string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Locked reports whether an operation is running at now.
+func (s Session) Locked(now time.Time) bool {
+	return s.LockJobID != uuid.Nil && now.Before(s.LockExpiresAt)
+}
+
+// Job is one version of a session.
 type Job struct {
-	ID         uuid.UUID             `json:"id"`
-	FileID     uuid.UUID             `json:"file_id"`
-	Kind       contracts.Kind        `json:"kind"`
-	Operation  contracts.Operation   `json:"operation"`
-	Status     contracts.Status      `json:"status"`
-	Params     contracts.ImageParams `json:"params"`
-	ResultName string                `json:"result_name,omitempty"`
-	ResultKey  string                `json:"-"`
-	ResultSize int64                 `json:"result_size,omitempty"`
-	ResultMime string                `json:"result_mime,omitempty"`
-	Width      int                   `json:"width,omitempty"`
-	Height     int                   `json:"height,omitempty"`
-	Error      string                `json:"error,omitempty"`
-	CreatedAt  time.Time             `json:"created_at"`
-	UpdatedAt  time.Time             `json:"updated_at"`
-	FinishedAt *time.Time            `json:"finished_at,omitempty"`
+	ID        uuid.UUID
+	FileID    uuid.UUID
+	SessionID uuid.UUID
+	// ParentID is the version this one was made from; uuid.Nil for version 0.
+	ParentID  uuid.UUID
+	Seq       int
+	Kind      contracts.Kind
+	Operation contracts.Operation
+	Status    contracts.Status
+	Step      *contracts.ImageStep
+	// Encode is how the result is written: requested while queued, actual once
+	// the worker reports back.
+	Encode          *contracts.Encode
+	Animation       *contracts.Animation
+	IntermediateKey string
+	PreviewKey      string
+	ResultKey       string
+	ResultName      string
+	ResultSize      int64
+	ResultMime      string
+	Width           int
+	Height          int
+	Error           string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	FinishedAt      *time.Time
 }
 
 func (j Job) IsTerminal() bool {

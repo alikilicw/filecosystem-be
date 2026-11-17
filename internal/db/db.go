@@ -16,8 +16,9 @@ const (
 	connectRetryDelay = 2 * time.Second
 	connectTimeout    = 60 * time.Second
 
-	CollectionFiles = "files"
-	CollectionJobs  = "jobs"
+	CollectionFiles    = "files"
+	CollectionJobs     = "jobs"
+	CollectionSessions = "sessions"
 )
 
 // Client wraps a MongoDB database and owns the underlying connection.
@@ -94,8 +95,16 @@ func EnsureIndexes(ctx context.Context, client *Client, log *slog.Logger) error 
 	if _, err := jobs.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "file_id", Value: 1}}},
 		{Keys: bson.D{{Key: "status", Value: 1}}},
+		{Keys: bson.D{{Key: "session_id", Value: 1}, {Key: "seq", Value: 1}}},
 	}); err != nil {
 		return fmt.Errorf("create jobs indexes: %w", err)
+	}
+
+	sessions := client.Collection(CollectionSessions)
+	if _, err := sessions.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "file_id", Value: 1}}},
+	}); err != nil {
+		return fmt.Errorf("create sessions indexes: %w", err)
 	}
 
 	log.Info("mongodb indexes ready")
