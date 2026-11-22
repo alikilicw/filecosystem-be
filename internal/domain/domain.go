@@ -37,12 +37,15 @@ type File struct {
 // nobody has reported uploading has no object behind it yet.
 func (f File) IsUsable() bool { return f.Status == contracts.FileStatusReady }
 
-// Session is one editing session on an uploaded image. Its versions are jobs:
-// version 0 opens the upload, and every later one is made from its parent's
-// intermediate. Head is the version the user is looking at; undo and reset
-// only move it.
+// Session is one editing session on an uploaded image or document. Its
+// versions are jobs: version 0 opens the upload, and every later one is made
+// from its parent's intermediate. Head is the version the user is looking at;
+// undo and reset only move it.
 type Session struct {
-	ID       uuid.UUID
+	ID   uuid.UUID
+	Kind contracts.Kind
+	// FileID is the upload the session was opened from; a document opened
+	// from several files keeps the first, and the session lives as long as it.
 	FileID   uuid.UUID
 	SourceID uuid.UUID
 	HeadID   uuid.UUID
@@ -75,6 +78,9 @@ type Job struct {
 	Operation contracts.Operation
 	Status    contracts.Status
 	Step      *contracts.ImageStep
+	DocStep   *contracts.DocumentStep
+	// Pages are a document version's pages, once the worker reports them.
+	Pages []contracts.PageInfo
 	// Encode is how the result is written: requested while queued, actual once
 	// the worker reports back.
 	Encode          *contracts.Encode
@@ -88,9 +94,12 @@ type Job struct {
 	Width           int
 	Height          int
 	Error           string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	FinishedAt      *time.Time
+	// ErrorCode is the worker's contracts.Fail* code for a failure the user
+	// can act on.
+	ErrorCode  string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	FinishedAt *time.Time
 }
 
 func (j Job) IsTerminal() bool {

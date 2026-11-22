@@ -19,14 +19,36 @@ const (
 	// lockTTL is how long one operation may hold a session. It is longer than
 	// the worker's own job timeout, so a lock only lapses when a job was lost.
 	lockTTL = 12 * time.Minute
-
-	// failedMessage is what a user sees when a worker fails; the worker's own
-	// error is logged and kept on the job, not shown.
-	failedMessage = "The image could not be processed."
 )
 
-// SessionService runs image editing sessions. Every operation is done by a
-// worker; the API only validates, records versions and moves the head.
+// failedMessage is what a user sees when a worker fails; the worker's own
+// error is logged and kept on the job, not shown. A failure code names a
+// cause the user can do something about.
+func failedMessage(kind contracts.Kind, code ...string) string {
+	if len(code) > 0 {
+		switch code[0] {
+		case contracts.FailEncrypted:
+			return "The PDF is password protected."
+		case contracts.FailWrongPassword:
+			return "The password does not open the PDF."
+		case contracts.FailTooManyPages:
+			return fmt.Sprintf("A document can have at most %d pages.", contracts.MaxDocumentPages)
+		case contracts.FailUnreadable:
+			return "The file is damaged or is not a PDF, an office document or an image."
+		case contracts.FailConvert:
+			return "The office document could not be converted to PDF."
+		}
+	}
+	if kind == contracts.KindDocument {
+		return "The document could not be processed."
+	}
+	return "The image could not be processed."
+}
+
+// SessionService runs editing sessions, for images and documents alike. Every
+// operation is done by a worker; the API only validates, records versions and
+// moves the head. Each family has its own routes, and a session is only ever
+// reachable through the routes of its own family.
 type SessionService struct {
 	files    *repository.FileRepository
 	sessions *repository.SessionRepository
@@ -73,6 +95,7 @@ func (s *SessionService) Create(ctx context.Context, fileID uuid.UUID) (SessionV
 	now := time.Now().UTC()
 	session := domain.Session{
 		ID:            uuid.New(),
+		Kind:          contracts.KindImage,
 		FileID:        file.ID,
 		NextSeq:       1,
 		LockExpiresAt: now.Add(lockTTL),
@@ -104,7 +127,7 @@ func (s *SessionService) Create(ctx context.Context, fileID uuid.UUID) (SessionV
 	if err := s.publish(ctx, session, job, msg); err != nil {
 		return SessionView{}, err
 	}
-	return s.Get(ctx, session.ID)
+	return s.Get(ctx, contracts.KindImage, session.ID)
 }
 
 // Edit makes a new version from the head. It fails with ErrBusy while
@@ -119,7 +142,7 @@ func (s *SessionService) Edit(ctx context.Context, id uuid.UUID, in EditInput) (
 		step = &clean
 	}
 
-	session, err := s.sessions.Get(ctx, id)
+	session, err := s.load(ctx, contracts.KindImage, id)
 	if err != nil {
 		return SessionView{}, err
 	}
@@ -187,12 +210,12 @@ func (s *SessionService) Edit(ctx context.Context, id uuid.UUID, in EditInput) (
 	if err := s.publish(ctx, locked, job, msg); err != nil {
 		return SessionView{}, err
 	}
-	return s.Get(ctx, id)
+	return s.Get(ctx, contracts.KindImage, id)
 }
 
 // Undo moves the head back to its parent.
-func (s *SessionService) Undo(ctx context.Context, id uuid.UUID) (SessionView, error) {
-	return s.moveHead(ctx, id, func(session domain.Session, head domain.Job) (uuid.UUID, error) {
+func (s *SessionService) Undo(ctx context.Context, kind contracts.Kind, id uuid.UUID) (SessionView, error) {
+	return s.moveHead(ctx, kind, id, func(session domain.Session, head domain.Job) (uuid.UUID, error) {
 		if head.ParentID == uuid.Nil {
 			return uuid.Nil, fmt.Errorf("%w: nothing to undo", domain.ErrInvalidInput)
 		}
@@ -201,8 +224,8 @@ func (s *SessionService) Undo(ctx context.Context, id uuid.UUID) (SessionView, e
 }
 
 // Reset moves the head back to the original.
-func (s *SessionService) Reset(ctx context.Context, id uuid.UUID) (SessionView, error) {
-	return s.moveHead(ctx, id, func(session domain.Session, head domain.Job) (uuid.UUID, error) {
+func (s *SessionService) Reset(ctx context.Context, kind contracts.Kind, id uuid.UUID) (SessionView, error) {
+	return s.moveHead(ctx, kind, id, func(session domain.Session, head domain.Job) (uuid.UUID, error) {
 		if head.ID == session.SourceID {
 			return uuid.Nil, fmt.Errorf("%w: nothing to reset", domain.ErrInvalidInput)
 		}
@@ -210,8 +233,8 @@ func (s *SessionService) Reset(ctx context.Context, id uuid.UUID) (SessionView, 
 	})
 }
 
-func (s *SessionService) moveHead(ctx context.Context, id uuid.UUID, target func(domain.Session, domain.Job) (uuid.UUID, error)) (SessionView, error) {
-	session, err := s.sessions.Get(ctx, id)
+func (s *SessionService) moveHead(ctx context.Context, kind contracts.Kind, id uuid.UUID, target func(domain.Session, domain.Job) (uuid.UUID, error)) (SessionView, error) {
+	session, err := s.load(ctx, kind, id)
 	if err != nil {
 		return SessionView{}, err
 	}
@@ -229,13 +252,13 @@ func (s *SessionService) moveHead(ctx context.Context, id uuid.UUID, target func
 	if err := s.sessions.MoveHead(ctx, id, head.ID, to); err != nil {
 		return SessionView{}, err
 	}
-	return s.Get(ctx, id)
+	return s.Get(ctx, kind, id)
 }
 
 // DownloadURL links to the head version's file: the upload itself while
 // nothing has been changed, otherwise the head's result.
-func (s *SessionService) DownloadURL(ctx context.Context, id uuid.UUID) (string, error) {
-	session, err := s.sessions.Get(ctx, id)
+func (s *SessionService) DownloadURL(ctx context.Context, kind contracts.Kind, id uuid.UUID) (string, error) {
+	session, err := s.load(ctx, kind, id)
 	if err != nil {
 		return "", err
 	}
@@ -244,7 +267,7 @@ func (s *SessionService) DownloadURL(ctx context.Context, id uuid.UUID) (string,
 		return "", err
 	}
 	if head.Status != contracts.StatusSucceeded || head.ResultKey == "" {
-		return "", fmt.Errorf("%w: the image is not ready yet", domain.ErrInvalidInput)
+		return "", fmt.Errorf("%w: the %s is not ready yet", domain.ErrInvalidInput, kind)
 	}
 	return s.storage.DownloadURL(ctx, head.ResultKey, head.ResultName)
 }
@@ -259,8 +282,8 @@ func (s *SessionService) ApplyResult(ctx context.Context, res contracts.JobResul
 	succeeded := res.Status == contracts.StatusSucceeded
 	reason := ""
 	if !succeeded {
-		reason = failedMessage
-		s.log.Warn("image job failed", "job_id", job.ID, "session_id", job.SessionID, "error", res.Error)
+		reason = failedMessage(job.Kind, res.Code)
+		s.log.Warn("job failed", "kind", job.Kind, "job_id", job.ID, "session_id", job.SessionID, "error", res.Error)
 	}
 	if _, err := s.sessions.Finish(ctx, job.SessionID, job.ID, succeeded, reason); err != nil {
 		return err
@@ -274,7 +297,7 @@ func (s *SessionService) message(file domain.File, session domain.Session, job d
 		FileID:       file.ID.String(),
 		SessionID:    session.ID.String(),
 		Seq:          job.Seq,
-		Kind:         contracts.KindImage,
+		Kind:         job.Kind,
 		Operation:    job.Operation,
 		SourceKey:    file.StorageKey,
 		SourceName:   file.OriginalName,
@@ -289,7 +312,7 @@ func (s *SessionService) message(file domain.File, session domain.Session, job d
 func (s *SessionService) publish(ctx context.Context, session domain.Session, job domain.Job, msg contracts.JobMessage) error {
 	body, err := json.Marshal(msg)
 	if err == nil {
-		err = s.queue.Publish(ctx, contracts.ExchangeJobs, contracts.RoutingKeyImage, body)
+		err = s.queue.Publish(ctx, contracts.ExchangeJobs, contracts.RoutingKey(msg.Kind), body)
 	}
 	if err == nil {
 		return nil
@@ -297,8 +320,21 @@ func (s *SessionService) publish(ctx context.Context, session domain.Session, jo
 	if markErr := s.jobs.MarkFailed(ctx, job.ID, "job could not be queued"); markErr != nil {
 		s.log.Error("failed to mark unqueued job", "job_id", job.ID, "error", markErr)
 	}
-	s.release(ctx, session.ID, job.ID, failedMessage)
+	s.release(ctx, session.ID, job.ID, failedMessage(job.Kind))
 	return fmt.Errorf("publish job: %w", err)
+}
+
+// load reads a session of the given family. A session of another family is
+// reported as not found, so an image route can never act on a document.
+func (s *SessionService) load(ctx context.Context, kind contracts.Kind, id uuid.UUID) (domain.Session, error) {
+	session, err := s.sessions.Get(ctx, id)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if session.Kind != kind {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	return session, nil
 }
 
 func (s *SessionService) release(ctx context.Context, id, jobID uuid.UUID, reason string) {

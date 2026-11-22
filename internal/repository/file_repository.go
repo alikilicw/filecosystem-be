@@ -120,8 +120,9 @@ func (r *FileRepository) DeleteAbandoned(ctx context.Context, cutoff time.Time, 
 
 // DeleteExpired removes metadata for files past their TTL and returns every
 // storage key the caller should purge: the upload, and every intermediate,
-// preview and result its editing sessions made. Keys may repeat (a version
-// without a step shares its parent's intermediate); deleting twice is harmless.
+// preview and result its editing sessions made. Versions share objects (a
+// version without a step reuses its parent's intermediate, and document
+// versions reuse their parent's page previews), so keys are deduplicated.
 func (r *FileRepository) DeleteExpired(ctx context.Context, limit int) ([]string, error) {
 	opts := options.Find().SetSort(bson.D{{Key: "expires_at", Value: 1}}).SetLimit(int64(limit))
 	cursor, err := r.files.Find(ctx, bson.M{"expires_at": bson.M{"$lt": time.Now().UTC()}}, opts)
@@ -155,13 +156,22 @@ func (r *FileRepository) DeleteExpired(ctx context.Context, limit int) ([]string
 	}
 	defer resultCursor.Close(ctx)
 
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		seen[key] = true
+	}
 	for resultCursor.Next(ctx) {
 		var job jobDocument
 		if err := resultCursor.Decode(&job); err != nil {
 			return nil, fmt.Errorf("scan expired result: %w", err)
 		}
-		for _, key := range []string{job.ResultKey, job.IntermediateKey, job.PreviewKey} {
-			if key != "" {
+		jobKeys := []string{job.ResultKey, job.IntermediateKey, job.PreviewKey}
+		for _, page := range job.Pages {
+			jobKeys = append(jobKeys, page.PreviewKey)
+		}
+		for _, key := range jobKeys {
+			if key != "" && !seen[key] {
+				seen[key] = true
 				keys = append(keys, key)
 			}
 		}

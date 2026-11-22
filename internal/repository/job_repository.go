@@ -16,29 +16,32 @@ import (
 )
 
 type jobDocument struct {
-	ID              string               `bson:"_id"`
-	FileID          string               `bson:"file_id"`
-	SessionID       string               `bson:"session_id"`
-	ParentID        string               `bson:"parent_id,omitempty"`
-	Seq             int                  `bson:"seq"`
-	Kind            contracts.Kind       `bson:"kind"`
-	Operation       contracts.Operation  `bson:"operation"`
-	Status          contracts.Status     `bson:"status"`
-	Step            *contracts.ImageStep `bson:"step,omitempty"`
-	Encode          *contracts.Encode    `bson:"encode,omitempty"`
-	Animation       *contracts.Animation `bson:"animation,omitempty"`
-	IntermediateKey string               `bson:"intermediate_key"`
-	PreviewKey      string               `bson:"preview_key"`
-	ResultName      string               `bson:"result_name"`
-	ResultKey       string               `bson:"result_key"`
-	ResultSize      int64                `bson:"result_size"`
-	ResultMime      string               `bson:"result_mime"`
-	Width           int                  `bson:"width"`
-	Height          int                  `bson:"height"`
-	Error           string               `bson:"error"`
-	CreatedAt       time.Time            `bson:"created_at"`
-	UpdatedAt       time.Time            `bson:"updated_at"`
-	FinishedAt      *time.Time           `bson:"finished_at,omitempty"`
+	ID              string                  `bson:"_id"`
+	FileID          string                  `bson:"file_id"`
+	SessionID       string                  `bson:"session_id"`
+	ParentID        string                  `bson:"parent_id,omitempty"`
+	Seq             int                     `bson:"seq"`
+	Kind            contracts.Kind          `bson:"kind"`
+	Operation       contracts.Operation     `bson:"operation"`
+	Status          contracts.Status        `bson:"status"`
+	Step            *contracts.ImageStep    `bson:"step,omitempty"`
+	DocStep         *contracts.DocumentStep `bson:"doc_step,omitempty"`
+	Pages           []contracts.PageInfo    `bson:"pages,omitempty"`
+	Encode          *contracts.Encode       `bson:"encode,omitempty"`
+	Animation       *contracts.Animation    `bson:"animation,omitempty"`
+	IntermediateKey string                  `bson:"intermediate_key"`
+	PreviewKey      string                  `bson:"preview_key"`
+	ResultName      string                  `bson:"result_name"`
+	ResultKey       string                  `bson:"result_key"`
+	ResultSize      int64                   `bson:"result_size"`
+	ResultMime      string                  `bson:"result_mime"`
+	Width           int                     `bson:"width"`
+	Height          int                     `bson:"height"`
+	Error           string                  `bson:"error"`
+	ErrorCode       string                  `bson:"error_code,omitempty"`
+	CreatedAt       time.Time               `bson:"created_at"`
+	UpdatedAt       time.Time               `bson:"updated_at"`
+	FinishedAt      *time.Time              `bson:"finished_at,omitempty"`
 }
 
 type JobRepository struct {
@@ -109,6 +112,7 @@ func (r *JobRepository) ApplyResult(ctx context.Context, res contracts.JobResult
 	set := bson.M{
 		"status":      res.Status,
 		"error":       res.Error,
+		"error_code":  res.Code,
 		"finished_at": finishedAt,
 		"updated_at":  time.Now().UTC(),
 	}
@@ -124,6 +128,9 @@ func (r *JobRepository) ApplyResult(ctx context.Context, res contracts.JobResult
 		set["animation"] = res.Animation
 		if res.Encode != nil {
 			set["encode"] = res.Encode
+		}
+		if res.Pages != nil {
+			set["pages"] = res.Pages
 		}
 	}
 
@@ -172,6 +179,8 @@ func toJobDocument(j domain.Job) jobDocument {
 		Operation:       j.Operation,
 		Status:          j.Status,
 		Step:            j.Step,
+		DocStep:         j.DocStep,
+		Pages:           j.Pages,
 		Encode:          j.Encode,
 		Animation:       j.Animation,
 		IntermediateKey: j.IntermediateKey,
@@ -183,6 +192,7 @@ func toJobDocument(j domain.Job) jobDocument {
 		Width:           j.Width,
 		Height:          j.Height,
 		Error:           j.Error,
+		ErrorCode:       j.ErrorCode,
 		CreatedAt:       j.CreatedAt,
 		UpdatedAt:       j.UpdatedAt,
 		FinishedAt:      j.FinishedAt,
@@ -222,6 +232,8 @@ func fromJobDocument(doc jobDocument) (domain.Job, error) {
 		Operation:       doc.Operation,
 		Status:          doc.Status,
 		Step:            doc.Step,
+		DocStep:         doc.DocStep,
+		Pages:           doc.Pages,
 		Encode:          doc.Encode,
 		Animation:       doc.Animation,
 		IntermediateKey: doc.IntermediateKey,
@@ -233,6 +245,7 @@ func fromJobDocument(doc jobDocument) (domain.Job, error) {
 		Width:           doc.Width,
 		Height:          doc.Height,
 		Error:           doc.Error,
+		ErrorCode:       doc.ErrorCode,
 		CreatedAt:       doc.CreatedAt,
 		UpdatedAt:       doc.UpdatedAt,
 		FinishedAt:      doc.FinishedAt,

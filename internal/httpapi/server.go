@@ -88,6 +88,17 @@ func (s *Server) Handler(ctx context.Context) http.Handler {
 			r.Post("/{sessionID}/reset", s.handleResetSession)
 			r.Get("/{sessionID}/download", s.handleDownloadSession)
 		})
+
+		// A document session is opened from one or more PDFs, joined in
+		// order, and edited a page list at a time.
+		r.Route("/document/sessions", func(r chi.Router) {
+			r.Post("/", s.handleCreateDocumentSession)
+			r.Get("/{sessionID}", s.handleGetDocumentSession)
+			r.Post("/{sessionID}/edits", s.handleEditDocumentSession)
+			r.Post("/{sessionID}/undo", s.handleUndoDocumentSession)
+			r.Post("/{sessionID}/reset", s.handleResetDocumentSession)
+			r.Get("/{sessionID}/download", s.handleDownloadDocumentSession)
+		})
 	})
 
 	return r

@@ -12,15 +12,30 @@ const (
 	ExchangeJobs   = "filecosystem.jobs"
 	ExchangeEvents = "filecosystem.events"
 
-	QueueImageJobs  = "image.jobs"
-	QueueJobResults = "job.results"
+	QueueImageJobs    = "image.jobs"
+	QueueDocumentJobs = "document.jobs"
+	QueueJobResults   = "job.results"
 
 	RoutingKeyImage     = "job.image"
+	RoutingKeyDocument  = "job.document"
 	RoutingKeyJobResult = "job.result"
 )
 
-// Kind is the file family a job belongs to. Only image is implemented today;
-// the others are reserved so the routing scheme does not have to change later.
+// RoutingKey is where a job of this kind is published, or "" for a family no
+// worker consumes yet.
+func RoutingKey(kind Kind) string {
+	switch kind {
+	case KindImage:
+		return RoutingKeyImage
+	case KindDocument:
+		return RoutingKeyDocument
+	}
+	return ""
+}
+
+// Kind is the file family a job belongs to. Image and document are
+// implemented; the others are reserved so the routing scheme does not have to
+// change later.
 type Kind string
 
 const (
@@ -61,6 +76,31 @@ var inputMimes = map[string]inputMime{
 	"image/avif": {KindImage, ".avif"},
 	"image/heic": {KindImage, ".heic"},
 	"image/heif": {KindImage, ".heif"},
+
+	"application/pdf": {KindDocument, ".pdf"},
+}
+
+// officeMimes are the office documents a worker converts to PDF before
+// anything else, so to the editor they are PDFs like any other. They are
+// documents to the rest of the platform.
+var officeMimes = map[string]string{
+	"application/msword": ".doc",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+	"application/vnd.oasis.opendocument.text":                                 ".odt",
+	"application/rtf":          ".rtf",
+	"text/rtf":                 ".rtf",
+	"application/vnd.ms-excel": ".xls",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         ".xlsx",
+	"application/vnd.oasis.opendocument.spreadsheet":                            ".ods",
+	"application/vnd.ms-powerpoint":                                             ".ppt",
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+	"application/vnd.oasis.opendocument.presentation":                           ".odp",
+}
+
+func init() {
+	for mime, ext := range officeMimes {
+		inputMimes[mime] = inputMime{KindDocument, ext}
+	}
 }
 
 // InputMime resolves a content type to the family that handles it and the
@@ -72,6 +112,13 @@ func InputMime(mime string) (kind Kind, ext string, ok bool) {
 		return "", "", false
 	}
 	return entry.kind, entry.ext, true
+}
+
+// IsOffice reports whether a content type is an office document a worker
+// converts to PDF.
+func IsOffice(mime string) bool {
+	_, ok := officeMimes[normalizeMime(mime)]
+	return ok
 }
 
 // normalizeMime drops any parameters (charset and friends) and folds case, so a
@@ -267,6 +314,133 @@ type Animation struct {
 // MaxVersions bounds how many edits one session can hold.
 const MaxVersions = 100
 
+// Limits for document sessions. A document is opened from up to
+// MaxDocumentInputs files, and no version may have more than MaxDocumentPages
+// pages: every page gets its own preview, so the page count is what a job
+// costs.
+const (
+	MaxDocumentInputs = 20
+	MaxDocumentPages  = 300
+)
+
+// DocStepOp is one document edit.
+type DocStepOp string
+
+const (
+	// DocOrganize rebuilds the page list: it reorders, drops and rotates
+	// pages in one go, which is what deleting, extracting, reordering and
+	// rotating all are.
+	DocOrganize DocStepOp = "organize"
+	// DocInsert puts the pages of other PDFs into the document.
+	DocInsert DocStepOp = "insert"
+	// DocCompress makes the PDF smaller: it drops what is unused or repeated
+	// and re-encodes large images at a lower resolution and quality. The
+	// pages stay the same pages, so their previews are kept.
+	DocCompress DocStepOp = "compress"
+
+	// The steps below export the document instead of changing it: the
+	// version's download is what they make, while its pages and the PDF the
+	// next edit starts from stay the parent's.
+
+	// DocSplit cuts the document into several PDFs, delivered as a ZIP.
+	DocSplit DocStepOp = "split"
+	// DocImages draws pages as images: one image, or a ZIP of several.
+	DocImages DocStepOp = "images"
+	// DocProtect encrypts the document with a password.
+	DocProtect DocStepOp = "protect"
+)
+
+// Exports reports whether a step exports the document rather than editing it.
+func (op DocStepOp) Exports() bool {
+	return op == DocSplit || op == DocImages || op == DocProtect
+}
+
+// Limits for exporting pages as images. A page is drawn at DPI, but never
+// with a side longer than MaxImageSide pixels, so a poster-sized page stays
+// a sane image.
+const (
+	MinImageDPI  = 72
+	MaxImageDPI  = 300
+	MaxImageSide = 6000
+	// MaxPasswordBytes is the longest password a PDF can carry (AES-256).
+	MaxPasswordBytes = 127
+)
+
+// How hard a compress step works on the images of a document.
+const (
+	CompressLight       = "light"
+	CompressRecommended = "recommended"
+	CompressStrong      = "strong"
+)
+
+// PageRef is one page of an organize step: which page of the parent it is
+// (1-based) and how far to turn it clockwise on top of its current rotation.
+type PageRef struct {
+	Page   int `json:"page" bson:"page"`
+	Rotate int `json:"rotate,omitempty" bson:"rotate,omitempty"`
+}
+
+// DocumentStep is one edit to a document. Which fields apply depends on Op:
+//
+//	organize  Pages: the new page list, in order; a parent page left out is
+//	          dropped
+//	insert    Files: the uploads whose pages go in, in order; At: how many of
+//	          the parent's pages come before them (0 puts them first)
+//	split     Cuts: the pages each part but the last ends on, ascending
+//	images    Select: the pages to draw (1-based, ascending), all when empty;
+//	          Format "jpeg" or "png"; DPI between MinImageDPI and MaxImageDPI
+//	protect   Password: the password the PDF will open with
+//	compress  Level: CompressLight, CompressRecommended or CompressStrong
+type DocumentStep struct {
+	Op     DocStepOp `json:"op" bson:"op"`
+	Pages  []PageRef `json:"pages,omitempty" bson:"pages,omitempty"`
+	Files  []string  `json:"files,omitempty" bson:"files,omitempty"`
+	At     int       `json:"at,omitempty" bson:"at,omitempty"`
+	Cuts   []int     `json:"cuts,omitempty" bson:"cuts,omitempty"`
+	Select []int     `json:"select,omitempty" bson:"select,omitempty"`
+	Format string    `json:"format,omitempty" bson:"format,omitempty"`
+	DPI    int       `json:"dpi,omitempty" bson:"dpi,omitempty"`
+	Level  string    `json:"level,omitempty" bson:"level,omitempty"`
+	// Password travels to the worker in the job message only. It is never
+	// written to the database, and never sent back to a client.
+	Password string `json:"password,omitempty" bson:"-"`
+}
+
+// PageInfo is one page of a document version. The preview is always drawn
+// upright, with the page's own rotation taken out, and Rotate is how far it
+// must be turned clockwise to show the page as a reader sees it. Width and
+// Height are the unrotated page in PDF points.
+type PageInfo struct {
+	PreviewKey string  `json:"preview_key" bson:"preview_key"`
+	Width      float64 `json:"width" bson:"width"`
+	Height     float64 `json:"height" bson:"height"`
+	Rotate     int     `json:"rotate,omitempty" bson:"rotate,omitempty"`
+}
+
+// Failure codes a worker attaches to a failed result when the cause is the
+// file itself, so the user can be told what to do about it.
+const (
+	FailEncrypted    = "encrypted"
+	FailTooManyPages = "too_many_pages"
+	FailUnreadable   = "unreadable"
+	// FailWrongPassword means a password was given for an encrypted PDF and
+	// it does not open it.
+	FailWrongPassword = "wrong_password"
+	// FailConvert means an office file could not be converted to PDF.
+	FailConvert = "convert_failed"
+)
+
+// Input is one stored file a job reads besides InputKey. A document may be
+// opened from images as well as PDFs: each image becomes a page.
+type Input struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+	Mime string `json:"mime"`
+	// Password opens the input if it is an encrypted PDF. Like a step's
+	// password it is only ever in the job message.
+	Password string `json:"password,omitempty"`
+}
+
 // JobMessage is published by the API and consumed by a worker.
 type JobMessage struct {
 	JobID      string    `json:"job_id"`
@@ -288,6 +462,14 @@ type JobMessage struct {
 	Step *ImageStep `json:"step,omitempty"`
 	// Encode is how an OpEdit job writes its result. OpSource ignores it.
 	Encode *Encode `json:"encode,omitempty"`
+	// DocStep is the one edit an OpEdit document job applies.
+	DocStep *DocumentStep `json:"doc_step,omitempty"`
+	// Inputs are the files a document job reads: every file the document is
+	// opened from for OpSource (InputKey is the first of them), the files an
+	// insert step adds for OpEdit.
+	Inputs []Input `json:"inputs,omitempty"`
+	// Pages are the parent version's pages, for an OpEdit document job.
+	Pages []PageInfo `json:"pages,omitempty"`
 	// OutputPrefix is where the job stores what it makes, ending in "/".
 	OutputPrefix string    `json:"output_prefix"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -311,7 +493,12 @@ type JobResult struct {
 	// Encode is how the result was actually written: for OpSource, the
 	// settings read off the original; for OpEdit, the requested ones with the
 	// quality a size target landed on.
-	Encode     *Encode   `json:"encode,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Encode *Encode `json:"encode,omitempty"`
+	// Pages are a document version's pages.
+	Pages []PageInfo `json:"pages,omitempty"`
+	Error string     `json:"error,omitempty"`
+	// Code says why a job failed, when it is something the user can act on;
+	// empty for anything else.
+	Code       string    `json:"code,omitempty"`
 	FinishedAt time.Time `json:"finished_at"`
 }

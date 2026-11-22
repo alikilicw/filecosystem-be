@@ -16,16 +16,19 @@ import (
 )
 
 type sessionDocument struct {
-	ID            string    `bson:"_id"`
-	FileID        string    `bson:"file_id"`
-	SourceID      string    `bson:"source_id"`
-	HeadID        string    `bson:"head_id"`
-	NextSeq       int       `bson:"next_seq"`
-	LockJobID     string    `bson:"lock_job_id"`
-	LockExpiresAt time.Time `bson:"lock_expires_at"`
-	LastError     string    `bson:"last_error"`
-	CreatedAt     time.Time `bson:"created_at"`
-	UpdatedAt     time.Time `bson:"updated_at"`
+	ID string `bson:"_id"`
+	// Kind is empty on sessions made before documents existed, which were
+	// all images.
+	Kind          contracts.Kind `bson:"kind,omitempty"`
+	FileID        string         `bson:"file_id"`
+	SourceID      string         `bson:"source_id"`
+	HeadID        string         `bson:"head_id"`
+	NextSeq       int            `bson:"next_seq"`
+	LockJobID     string         `bson:"lock_job_id"`
+	LockExpiresAt time.Time      `bson:"lock_expires_at"`
+	LastError     string         `bson:"last_error"`
+	CreatedAt     time.Time      `bson:"created_at"`
+	UpdatedAt     time.Time      `bson:"updated_at"`
 }
 
 // SessionRepository keeps the session documents. The lock is a field on the
@@ -157,6 +160,7 @@ func (r *SessionRepository) MoveHead(ctx context.Context, id, from, to uuid.UUID
 func toSessionDocument(s domain.Session) sessionDocument {
 	doc := sessionDocument{
 		ID:            s.ID.String(),
+		Kind:          s.Kind,
 		FileID:        s.FileID.String(),
 		SourceID:      s.SourceID.String(),
 		HeadID:        s.HeadID.String(),
@@ -184,11 +188,15 @@ func fromSessionDocument(doc sessionDocument) (domain.Session, error) {
 		return id, nil
 	}
 	s := domain.Session{
+		Kind:          doc.Kind,
 		NextSeq:       doc.NextSeq,
 		LockExpiresAt: doc.LockExpiresAt,
 		LastError:     doc.LastError,
 		CreatedAt:     doc.CreatedAt,
 		UpdatedAt:     doc.UpdatedAt,
+	}
+	if s.Kind == "" {
+		s.Kind = contracts.KindImage
 	}
 	var err error
 	if s.ID, err = parse("id", doc.ID); err != nil {

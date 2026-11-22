@@ -109,7 +109,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
-	s.sessionAction(w, r, http.StatusOK, s.sessions.Get)
+	s.sessionAction(w, r, http.StatusOK, s.kindAction(contracts.KindImage, s.sessions.Get))
 }
 
 type editSessionRequest struct {
@@ -133,19 +133,87 @@ func (s *Server) handleEditSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUndoSession(w http.ResponseWriter, r *http.Request) {
-	s.sessionAction(w, r, http.StatusOK, s.sessions.Undo)
+	s.sessionAction(w, r, http.StatusOK, s.kindAction(contracts.KindImage, s.sessions.Undo))
 }
 
 func (s *Server) handleResetSession(w http.ResponseWriter, r *http.Request) {
-	s.sessionAction(w, r, http.StatusOK, s.sessions.Reset)
+	s.sessionAction(w, r, http.StatusOK, s.kindAction(contracts.KindImage, s.sessions.Reset))
 }
 
 func (s *Server) handleDownloadSession(w http.ResponseWriter, r *http.Request) {
+	s.download(w, r, contracts.KindImage)
+}
+
+type createDocumentSessionRequest struct {
+	FileIDs []string `json:"file_ids"`
+	// Password opens the files that are encrypted PDFs.
+	Password string `json:"password"`
+}
+
+// handleCreateDocumentSession opens the files, in order, as one document.
+func (s *Server) handleCreateDocumentSession(w http.ResponseWriter, r *http.Request) {
+	var req createDocumentSessionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", err.Error())
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(req.FileIDs))
+	for _, raw := range req.FileIDs {
+		id, ok := parseUUID(w, raw, "file_id")
+		if !ok {
+			return
+		}
+		ids = append(ids, id)
+	}
+	session, err := s.sessions.CreateDocument(r.Context(), ids, req.Password)
+	if err != nil {
+		writeServiceError(w, s.log, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"session": session})
+}
+
+func (s *Server) handleGetDocumentSession(w http.ResponseWriter, r *http.Request) {
+	s.sessionAction(w, r, http.StatusOK, s.kindAction(contracts.KindDocument, s.sessions.Get))
+}
+
+type editDocumentSessionRequest struct {
+	Step *contracts.DocumentStep `json:"step"`
+}
+
+func (s *Server) handleEditDocumentSession(w http.ResponseWriter, r *http.Request) {
+	var req editDocumentSessionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", err.Error())
+		return
+	}
+	if req.Step == nil {
+		writeError(w, http.StatusBadRequest, "invalid_input", "step is required")
+		return
+	}
+	s.sessionAction(w, r, http.StatusAccepted, func(ctx context.Context, id uuid.UUID) (service.SessionView, error) {
+		return s.sessions.EditDocument(ctx, id, *req.Step)
+	})
+}
+
+func (s *Server) handleUndoDocumentSession(w http.ResponseWriter, r *http.Request) {
+	s.sessionAction(w, r, http.StatusOK, s.kindAction(contracts.KindDocument, s.sessions.Undo))
+}
+
+func (s *Server) handleResetDocumentSession(w http.ResponseWriter, r *http.Request) {
+	s.sessionAction(w, r, http.StatusOK, s.kindAction(contracts.KindDocument, s.sessions.Reset))
+}
+
+func (s *Server) handleDownloadDocumentSession(w http.ResponseWriter, r *http.Request) {
+	s.download(w, r, contracts.KindDocument)
+}
+
+func (s *Server) download(w http.ResponseWriter, r *http.Request, kind contracts.Kind) {
 	id, ok := parseUUID(w, chi.URLParam(r, "sessionID"), "session_id")
 	if !ok {
 		return
 	}
-	url, err := s.sessions.DownloadURL(r.Context(), id)
+	url, err := s.sessions.DownloadURL(r.Context(), kind, id)
 	if err != nil {
 		writeServiceError(w, s.log, err)
 		return
@@ -153,7 +221,16 @@ func (s *Server) handleDownloadSession(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
-func (s *Server) sessionAction(w http.ResponseWriter, r *http.Request, status int, action func(context.Context, uuid.UUID) (service.SessionView, error)) {
+type sessionFunc func(context.Context, uuid.UUID) (service.SessionView, error)
+
+// kindAction binds a session operation to the family whose routes call it.
+func (s *Server) kindAction(kind contracts.Kind, action func(context.Context, contracts.Kind, uuid.UUID) (service.SessionView, error)) sessionFunc {
+	return func(ctx context.Context, id uuid.UUID) (service.SessionView, error) {
+		return action(ctx, kind, id)
+	}
+}
+
+func (s *Server) sessionAction(w http.ResponseWriter, r *http.Request, status int, action sessionFunc) {
 	id, ok := parseUUID(w, chi.URLParam(r, "sessionID"), "session_id")
 	if !ok {
 		return

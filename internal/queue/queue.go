@@ -255,6 +255,7 @@ func DeclareTopology(ch *amqp.Channel) error {
 
 	bindings := []struct{ queue, exchange, key string }{
 		{contracts.QueueImageJobs, contracts.ExchangeJobs, contracts.RoutingKeyImage},
+		{contracts.QueueDocumentJobs, contracts.ExchangeJobs, contracts.RoutingKeyDocument},
 		{contracts.QueueJobResults, contracts.ExchangeEvents, contracts.RoutingKeyJobResult},
 	}
 	for _, b := range bindings {
