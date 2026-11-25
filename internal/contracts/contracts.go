@@ -342,6 +342,12 @@ const (
 	DocPageNumbers DocStepOp = "page_numbers"
 	// DocWatermark draws a see-through line of text across every page.
 	DocWatermark DocStepOp = "watermark"
+	// DocCrop shows only an area of some or all pages, by narrowing their
+	// crop box. What is cut off stays in the file, hidden.
+	DocCrop DocStepOp = "crop"
+	// DocSign draws an image (a hand-drawn or typed signature) onto pages.
+	// It is a picture of a signature, not a cryptographic one.
+	DocSign DocStepOp = "sign"
 
 	// The steps below export the document instead of changing it: the
 	// version's download is what they make, while its pages and the PDF the
@@ -390,6 +396,29 @@ const (
 	MaxStart     = 100000
 )
 
+// Crop and signature limits. Box sides are fractions of the page.
+const (
+	MinCropSide  = 0.05
+	MinPlaceSide = 0.01
+	MaxPlaces    = 200
+)
+
+// Box is an area of a page as a reader sees it, with the page's rotation
+// applied: X and Y are its top-left corner, W and H its size, all fractions
+// of the page's visible width or height (X 0 is the left edge, Y 0 the top).
+type Box struct {
+	X float64 `json:"x" bson:"x"`
+	Y float64 `json:"y" bson:"y"`
+	W float64 `json:"w" bson:"w"`
+	H float64 `json:"h" bson:"h"`
+}
+
+// Place is where a sign step draws its image: a page (1-based) and a box.
+type Place struct {
+	Page int `json:"page" bson:"page"`
+	Box  Box `json:"box" bson:"box"`
+}
+
 // NumberPositions are where a page number may go: top or bottom, then left,
 // centre or right.
 var NumberPositions = []string{"tl", "tc", "tr", "bl", "bc", "br"}
@@ -419,6 +448,10 @@ type PageRef struct {
 //	          Size: SizeSmall, SizeMedium or SizeLarge
 //	watermark Text; Size; Color "#rrggbb"; Opacity between MinOpacity and
 //	          1; Diagonal: along the diagonal instead of level
+//	crop      Box: the area to keep, at least MinCropSide each way; Select:
+//	          the pages to crop (1-based, ascending), all when empty
+//	sign      Files: the one image upload to draw; Places: where, at most
+//	          MaxPlaces, each box at least MinPlaceSide each way
 type DocumentStep struct {
 	Op     DocStepOp `json:"op" bson:"op"`
 	Pages  []PageRef `json:"pages,omitempty" bson:"pages,omitempty"`
@@ -438,6 +471,9 @@ type DocumentStep struct {
 	Color     string  `json:"color,omitempty" bson:"color,omitempty"`
 	Opacity   float64 `json:"opacity,omitempty" bson:"opacity,omitempty"`
 	Diagonal  bool    `json:"diagonal,omitempty" bson:"diagonal,omitempty"`
+
+	Box    *Box    `json:"box,omitempty" bson:"box,omitempty"`
+	Places []Place `json:"places,omitempty" bson:"places,omitempty"`
 	// Password travels to the worker in the job message only. It is never
 	// written to the database, and never sent back to a client.
 	Password string `json:"password,omitempty" bson:"-"`

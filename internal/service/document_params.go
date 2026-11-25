@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -99,16 +100,9 @@ func normalizeDocStep(s contracts.DocumentStep, pageCount int) (contracts.Docume
 			return out, fmt.Errorf("dpi must be between %d and %d", contracts.MinImageDPI, contracts.MaxImageDPI)
 		}
 		out.DPI = s.DPI
-		last := 0
-		for _, page := range s.Select {
-			if page <= last || page > pageCount {
-				return out, fmt.Errorf("selected pages must be ascending pages between 1 and %d", pageCount)
-			}
-			last = page
-		}
-		// Every page selected is the same as none: the whole document.
-		if len(s.Select) < pageCount {
-			out.Select = append([]int(nil), s.Select...)
+		var err error
+		if out.Select, err = selectPages(s.Select, pageCount); err != nil {
+			return out, err
 		}
 
 	case contracts.DocProtect:
@@ -189,10 +183,87 @@ func normalizeDocStep(s contracts.DocumentStep, pageCount int) (contracts.Docume
 		}
 		out.Diagonal = s.Diagonal
 
+	case contracts.DocCrop:
+		if s.Box == nil {
+			return out, fmt.Errorf("choose the area to keep")
+		}
+		box, ok := cleanBox(*s.Box, contracts.MinCropSide)
+		if !ok {
+			return out, fmt.Errorf("the area to keep must lie on the page and be at least %.0f%% of it each way", contracts.MinCropSide*100)
+		}
+		if box == (contracts.Box{W: 1, H: 1}) {
+			return out, fmt.Errorf("nothing to change")
+		}
+		out.Box = &box
+		var err error
+		if out.Select, err = selectPages(s.Select, pageCount); err != nil {
+			return out, err
+		}
+
+	case contracts.DocSign:
+		if len(s.Files) != 1 {
+			return out, fmt.Errorf("exactly one signature image is required")
+		}
+		id, err := uuid.Parse(s.Files[0])
+		if err != nil {
+			return out, fmt.Errorf("%q is not a file id", s.Files[0])
+		}
+		out.Files = []string{id.String()}
+		if len(s.Places) == 0 {
+			return out, fmt.Errorf("place the signature on at least one page")
+		}
+		if len(s.Places) > contracts.MaxPlaces {
+			return out, fmt.Errorf("the signature can be placed at most %d times", contracts.MaxPlaces)
+		}
+		out.Places = make([]contracts.Place, len(s.Places))
+		for i, p := range s.Places {
+			if p.Page < 1 || p.Page > pageCount {
+				return out, fmt.Errorf("page %d does not exist", p.Page)
+			}
+			box, ok := cleanBox(p.Box, contracts.MinPlaceSide)
+			if !ok {
+				return out, fmt.Errorf("the signature on page %d must lie on the page", p.Page)
+			}
+			out.Places[i] = contracts.Place{Page: p.Page, Box: box}
+		}
+
 	default:
 		return out, fmt.Errorf("unknown op %q", s.Op)
 	}
 	return out, nil
+}
+
+// selectPages checks a page selection: ascending pages of the document.
+// Every page selected is the same as none, the whole document, and comes
+// back empty.
+func selectPages(sel []int, pageCount int) ([]int, error) {
+	last := 0
+	for _, page := range sel {
+		if page <= last || page > pageCount {
+			return nil, fmt.Errorf("selected pages must be ascending pages between 1 and %d", pageCount)
+		}
+		last = page
+	}
+	if len(sel) < pageCount {
+		return append([]int(nil), sel...), nil
+	}
+	return nil, nil
+}
+
+// cleanBox checks that b lies on the page and is at least minSide of it each
+// way, rounding it to a millionth of the page, which is far below a point.
+// Rounding can push its far edge a hair past the page; that is pulled back.
+func cleanBox(b contracts.Box, minSide float64) (contracts.Box, bool) {
+	const slack = 1e-6
+	// Written so that NaN fails every comparison.
+	if !(b.X >= 0 && b.Y >= 0 && b.W >= minSide && b.H >= minSide && b.X+b.W <= 1+slack && b.Y+b.H <= 1+slack) {
+		return contracts.Box{}, false
+	}
+	round := func(f float64) float64 { return math.Round(f*1e6) / 1e6 }
+	out := contracts.Box{X: round(b.X), Y: round(b.Y), W: round(b.W), H: round(b.H)}
+	out.W = min(out.W, 1-out.X)
+	out.H = min(out.H, 1-out.Y)
+	return out, true
 }
 
 var hexColor = regexp.MustCompile(`^#[0-9a-f]{6}$`)

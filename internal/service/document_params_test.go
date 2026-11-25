@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -196,5 +197,74 @@ func TestDocumentStepPasswordIsNotStored(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "hunter2-secret") {
 		t.Fatal("the password was written to BSON")
+	}
+}
+
+func TestNormalizeDocStepCropAndSign(t *testing.T) {
+	const id = "0d8e2f2c-5b8e-4d33-9a43-0d5d8a4a0c11"
+	box := func(x, y, w, h float64) *contracts.Box { return &contracts.Box{X: x, Y: y, W: w, H: h} }
+	nan := math.NaN()
+	cases := []struct {
+		name    string
+		step    contracts.DocumentStep
+		wantErr bool
+		want    contracts.DocumentStep
+	}{
+		{
+			name: "crop rounds and keeps a selection",
+			step: contracts.DocumentStep{Op: contracts.DocCrop, Box: box(0.1, 0.2, 0.30000004, 0.5), Select: []int{2}},
+			want: contracts.DocumentStep{Op: contracts.DocCrop, Box: box(0.1, 0.2, 0.3, 0.5), Select: []int{2}},
+		},
+		{
+			name: "crop of every page is the whole document",
+			step: contracts.DocumentStep{Op: contracts.DocCrop, Box: box(0, 0, 0.5, 0.5), Select: []int{1, 2, 3}},
+			want: contracts.DocumentStep{Op: contracts.DocCrop, Box: box(0, 0, 0.5, 0.5)},
+		},
+		{
+			name: "crop pulls a rounded edge back onto the page",
+			step: contracts.DocumentStep{Op: contracts.DocCrop, Box: box(0.5000004, 0, 0.5000004, 1)},
+			want: contracts.DocumentStep{Op: contracts.DocCrop, Box: box(0.5, 0, 0.5, 1)},
+		},
+		{name: "crop of the whole page", step: contracts.DocumentStep{Op: contracts.DocCrop, Box: box(0, 0, 1, 1)}, wantErr: true},
+		{name: "crop without a box", step: contracts.DocumentStep{Op: contracts.DocCrop}, wantErr: true},
+		{name: "crop too small", step: contracts.DocumentStep{Op: contracts.DocCrop, Box: box(0, 0, 0.01, 0.5)}, wantErr: true},
+		{name: "crop off the page", step: contracts.DocumentStep{Op: contracts.DocCrop, Box: box(0.6, 0, 0.5, 0.5)}, wantErr: true},
+		{name: "crop NaN", step: contracts.DocumentStep{Op: contracts.DocCrop, Box: box(nan, 0, 0.5, 0.5)}, wantErr: true},
+		{name: "crop bad selection", step: contracts.DocumentStep{Op: contracts.DocCrop, Box: box(0, 0, 0.5, 0.5), Select: []int{2, 1}}, wantErr: true},
+		{
+			name: "sign",
+			step: contracts.DocumentStep{Op: contracts.DocSign, Files: []string{strings.ToUpper(id)}, Places: []contracts.Place{{Page: 3, Box: *box(0.5, 0.8, 0.3, 0.1)}}, Text: "dropped"},
+			want: contracts.DocumentStep{Op: contracts.DocSign, Files: []string{id}, Places: []contracts.Place{{Page: 3, Box: *box(0.5, 0.8, 0.3, 0.1)}}},
+		},
+		{name: "sign without image", step: contracts.DocumentStep{Op: contracts.DocSign, Places: []contracts.Place{{Page: 1, Box: *box(0, 0, 0.1, 0.1)}}}, wantErr: true},
+		{name: "sign with two images", step: contracts.DocumentStep{Op: contracts.DocSign, Files: []string{id, id}, Places: []contracts.Place{{Page: 1, Box: *box(0, 0, 0.1, 0.1)}}}, wantErr: true},
+		{name: "sign nowhere", step: contracts.DocumentStep{Op: contracts.DocSign, Files: []string{id}}, wantErr: true},
+		{name: "sign on a missing page", step: contracts.DocumentStep{Op: contracts.DocSign, Files: []string{id}, Places: []contracts.Place{{Page: 4, Box: *box(0, 0, 0.1, 0.1)}}}, wantErr: true},
+		{name: "sign off the page", step: contracts.DocumentStep{Op: contracts.DocSign, Files: []string{id}, Places: []contracts.Place{{Page: 1, Box: *box(0.95, 0, 0.1, 0.1)}}}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeDocStep(tc.step, 3)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("no error, got %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+
+	many := make([]contracts.Place, contracts.MaxPlaces+1)
+	for i := range many {
+		many[i] = contracts.Place{Page: 1, Box: *box(0, 0, 0.1, 0.1)}
+	}
+	if _, err := normalizeDocStep(contracts.DocumentStep{Op: contracts.DocSign, Files: []string{id}, Places: many}, 3); err == nil {
+		t.Error("too many places: no error")
 	}
 }

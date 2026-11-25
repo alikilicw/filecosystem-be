@@ -97,7 +97,7 @@ func (s *SessionService) EditDocument(ctx context.Context, id uuid.UUID, step co
 	}
 
 	var inputs []contracts.Input
-	if clean.Op == contracts.DocInsert {
+	if clean.Op == contracts.DocInsert || clean.Op == contracts.DocSign {
 		ids := make([]uuid.UUID, len(clean.Files))
 		for i, raw := range clean.Files {
 			ids[i] = uuid.MustParse(raw) // normalizeDocStep checked every id
@@ -105,6 +105,13 @@ func (s *SessionService) EditDocument(ctx context.Context, id uuid.UUID, step co
 		files, err := s.documentFiles(ctx, ids)
 		if err != nil {
 			return SessionView{}, err
+		}
+		if clean.Op == contracts.DocSign {
+			// The worker draws the image as it is, so it must be one a PDF
+			// can hold: a PNG (which keeps its transparency) or a JPEG.
+			if m := files[0].MimeType; m != "image/png" && m != "image/jpeg" {
+				return SessionView{}, fmt.Errorf("%w: the signature must be a PNG or JPEG image", domain.ErrInvalidInput)
+			}
 		}
 		inputs = inputsOf(files)
 	}
