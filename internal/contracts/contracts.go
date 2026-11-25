@@ -337,6 +337,11 @@ const (
 	// and re-encodes large images at a lower resolution and quality. The
 	// pages stay the same pages, so their previews are kept.
 	DocCompress DocStepOp = "compress"
+	// DocPageNumbers draws a number onto every page, or every page but the
+	// first. The content changes, so every page is rendered again.
+	DocPageNumbers DocStepOp = "page_numbers"
+	// DocWatermark draws a see-through line of text across every page.
+	DocWatermark DocStepOp = "watermark"
 
 	// The steps below export the document instead of changing it: the
 	// version's download is what they make, while its pages and the PDF the
@@ -373,6 +378,22 @@ const (
 	CompressStrong      = "strong"
 )
 
+// Page number and watermark settings. Sizes are steps, not points: the
+// worker picks the font size, since a page number and a watermark mean very
+// different things by "large".
+const (
+	MaxStampText = 80
+	SizeSmall    = "small"
+	SizeMedium   = "medium"
+	SizeLarge    = "large"
+	MinOpacity   = 0.1
+	MaxStart     = 100000
+)
+
+// NumberPositions are where a page number may go: top or bottom, then left,
+// centre or right.
+var NumberPositions = []string{"tl", "tc", "tr", "bl", "bc", "br"}
+
 // PageRef is one page of an organize step: which page of the parent it is
 // (1-based) and how far to turn it clockwise on top of its current rotation.
 type PageRef struct {
@@ -391,6 +412,13 @@ type PageRef struct {
 //	          Format "jpeg" or "png"; DPI between MinImageDPI and MaxImageDPI
 //	protect   Password: the password the PDF will open with
 //	compress  Level: CompressLight, CompressRecommended or CompressStrong
+//	page_numbers
+//	          Text: the template, with {n} for the number and {total} for
+//	          the last number; Position: one of NumberPositions; Start: the
+//	          first number; SkipFirst: leave the first page unnumbered;
+//	          Size: SizeSmall, SizeMedium or SizeLarge
+//	watermark Text; Size; Color "#rrggbb"; Opacity between MinOpacity and
+//	          1; Diagonal: along the diagonal instead of level
 type DocumentStep struct {
 	Op     DocStepOp `json:"op" bson:"op"`
 	Pages  []PageRef `json:"pages,omitempty" bson:"pages,omitempty"`
@@ -401,6 +429,15 @@ type DocumentStep struct {
 	Format string    `json:"format,omitempty" bson:"format,omitempty"`
 	DPI    int       `json:"dpi,omitempty" bson:"dpi,omitempty"`
 	Level  string    `json:"level,omitempty" bson:"level,omitempty"`
+
+	Text      string  `json:"text,omitempty" bson:"text,omitempty"`
+	Position  string  `json:"position,omitempty" bson:"position,omitempty"`
+	Start     int     `json:"start,omitempty" bson:"start,omitempty"`
+	SkipFirst bool    `json:"skip_first,omitempty" bson:"skip_first,omitempty"`
+	Size      string  `json:"size,omitempty" bson:"size,omitempty"`
+	Color     string  `json:"color,omitempty" bson:"color,omitempty"`
+	Opacity   float64 `json:"opacity,omitempty" bson:"opacity,omitempty"`
+	Diagonal  bool    `json:"diagonal,omitempty" bson:"diagonal,omitempty"`
 	// Password travels to the worker in the job message only. It is never
 	// written to the database, and never sent back to a client.
 	Password string `json:"password,omitempty" bson:"-"`

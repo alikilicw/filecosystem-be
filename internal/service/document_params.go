@@ -2,7 +2,11 @@ package service
 
 import (
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/alikilicw/filecosystem-be/internal/contracts"
 	"github.com/google/uuid"
@@ -126,8 +130,98 @@ func normalizeDocStep(s contracts.DocumentStep, pageCount int) (contracts.Docume
 			return out, fmt.Errorf("level must be light, recommended or strong")
 		}
 
+	case contracts.DocPageNumbers:
+		text, err := stampText(s.Text, "{n}")
+		if err != nil {
+			return out, err
+		}
+		if !strings.Contains(text, "{n}") {
+			return out, fmt.Errorf("the text must contain {n} where the number goes")
+		}
+		out.Text = text
+		out.Position = s.Position
+		if out.Position == "" {
+			out.Position = "bc"
+		}
+		if !slices.Contains(contracts.NumberPositions, out.Position) {
+			return out, fmt.Errorf("position must be one of %s", strings.Join(contracts.NumberPositions, ", "))
+		}
+		out.Start = s.Start
+		if out.Start == 0 {
+			out.Start = 1
+		}
+		if out.Start < 1 || out.Start > contracts.MaxStart {
+			return out, fmt.Errorf("start must be between 1 and %d", contracts.MaxStart)
+		}
+		if s.SkipFirst && pageCount < 2 {
+			return out, fmt.Errorf("a one-page document has no page after the first to number")
+		}
+		out.SkipFirst = s.SkipFirst
+		if out.Size, err = stampSize(s.Size); err != nil {
+			return out, err
+		}
+
+	case contracts.DocWatermark:
+		text, err := stampText(s.Text, "")
+		if err != nil {
+			return out, err
+		}
+		if text == "" {
+			return out, fmt.Errorf("enter the watermark text")
+		}
+		out.Text = text
+		if out.Size, err = stampSize(s.Size); err != nil {
+			return out, err
+		}
+		out.Color = strings.ToLower(s.Color)
+		if out.Color == "" {
+			out.Color = "#808080"
+		}
+		if !hexColor.MatchString(out.Color) {
+			return out, fmt.Errorf("color must be #rrggbb")
+		}
+		out.Opacity = s.Opacity
+		if out.Opacity == 0 {
+			out.Opacity = 0.3
+		}
+		if out.Opacity < contracts.MinOpacity || out.Opacity > 1 {
+			return out, fmt.Errorf("opacity must be between %.1f and 1", contracts.MinOpacity)
+		}
+		out.Diagonal = s.Diagonal
+
 	default:
 		return out, fmt.Errorf("unknown op %q", s.Op)
 	}
 	return out, nil
+}
+
+var hexColor = regexp.MustCompile(`^#[0-9a-f]{6}$`)
+
+// stampText trims the text drawn onto pages, falling back to fallback when
+// it is empty, and holds it to one line of MaxStampText characters.
+func stampText(raw, fallback string) (string, error) {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		text = fallback
+	}
+	if !utf8.ValidString(text) {
+		return "", fmt.Errorf("the text is not valid UTF-8")
+	}
+	if n := utf8.RuneCountInString(text); n > contracts.MaxStampText {
+		return "", fmt.Errorf("the text has at most %d characters", contracts.MaxStampText)
+	}
+	if strings.IndexFunc(text, unicode.IsControl) >= 0 {
+		return "", fmt.Errorf("the text must be a single line")
+	}
+	return text, nil
+}
+
+func stampSize(size string) (string, error) {
+	switch size {
+	case "":
+		return contracts.SizeMedium, nil
+	case contracts.SizeSmall, contracts.SizeMedium, contracts.SizeLarge:
+		return size, nil
+	}
+	return "", fmt.Errorf("size must be small, medium or large")
 }

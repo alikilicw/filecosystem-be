@@ -1,6 +1,7 @@
 package service
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -139,6 +140,55 @@ func TestNormalizeDocStepExports(t *testing.T) {
 
 // A password travels in the job message only: the job stored in the database
 // must not carry it.
+func TestNormalizeDocStepStamps(t *testing.T) {
+	cases := []struct {
+		name    string
+		step    contracts.DocumentStep
+		pages   int
+		wantErr bool
+		want    contracts.DocumentStep
+	}{
+		{name: "numbers defaults", step: contracts.DocumentStep{Op: contracts.DocPageNumbers, Color: "#ff0000"}, pages: 3,
+			want: contracts.DocumentStep{Op: contracts.DocPageNumbers, Text: "{n}", Position: "bc", Start: 1, Size: "medium"}},
+		{name: "numbers full", step: contracts.DocumentStep{Op: contracts.DocPageNumbers, Text: " Sayfa {n} / {total} ", Position: "tr", Start: 5, SkipFirst: true, Size: "large"}, pages: 3,
+			want: contracts.DocumentStep{Op: contracts.DocPageNumbers, Text: "Sayfa {n} / {total}", Position: "tr", Start: 5, SkipFirst: true, Size: "large"}},
+		{name: "numbers no {n}", step: contracts.DocumentStep{Op: contracts.DocPageNumbers, Text: "Sayfa"}, pages: 3, wantErr: true},
+		{name: "numbers bad position", step: contracts.DocumentStep{Op: contracts.DocPageNumbers, Position: "c"}, pages: 3, wantErr: true},
+		{name: "numbers negative start", step: contracts.DocumentStep{Op: contracts.DocPageNumbers, Start: -1}, pages: 3, wantErr: true},
+		{name: "numbers skip only page", step: contracts.DocumentStep{Op: contracts.DocPageNumbers, SkipFirst: true}, pages: 1, wantErr: true},
+		{name: "numbers two lines", step: contracts.DocumentStep{Op: contracts.DocPageNumbers, Text: "{n}\nx"}, pages: 3, wantErr: true},
+		{name: "watermark defaults", step: contracts.DocumentStep{Op: contracts.DocWatermark, Text: "GİZLİ"}, pages: 1,
+			want: contracts.DocumentStep{Op: contracts.DocWatermark, Text: "GİZLİ", Size: "medium", Color: "#808080", Opacity: 0.3}},
+		{name: "watermark full", step: contracts.DocumentStep{Op: contracts.DocWatermark, Text: "Taslak", Size: "small", Color: "#C0392B", Opacity: 0.8, Diagonal: true}, pages: 1,
+			want: contracts.DocumentStep{Op: contracts.DocWatermark, Text: "Taslak", Size: "small", Color: "#c0392b", Opacity: 0.8, Diagonal: true}},
+		{name: "watermark blank", step: contracts.DocumentStep{Op: contracts.DocWatermark, Text: "   "}, pages: 1, wantErr: true},
+		{name: "watermark too long", step: contracts.DocumentStep{Op: contracts.DocWatermark, Text: strings.Repeat("ş", 81)}, pages: 1, wantErr: true},
+		{name: "watermark bad color", step: contracts.DocumentStep{Op: contracts.DocWatermark, Text: "x", Color: "red"}, pages: 1, wantErr: true},
+		{name: "watermark faint", step: contracts.DocumentStep{Op: contracts.DocWatermark, Text: "x", Opacity: 0.05}, pages: 1, wantErr: true},
+		{name: "watermark bad size", step: contracts.DocumentStep{Op: contracts.DocWatermark, Text: "x", Size: "huge"}, pages: 1, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeDocStep(tc.step, tc.pages)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want an error, got %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+	if contracts.DocPageNumbers.Exports() || contracts.DocWatermark.Exports() {
+		t.Fatal("page numbers and watermarks edit the document")
+	}
+}
+
 func TestDocumentStepPasswordIsNotStored(t *testing.T) {
 	raw, err := bson.Marshal(contracts.DocumentStep{Op: contracts.DocProtect, Password: "hunter2-secret"})
 	if err != nil {
