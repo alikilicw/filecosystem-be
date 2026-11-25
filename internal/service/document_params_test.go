@@ -268,3 +268,39 @@ func TestNormalizeDocStepCropAndSign(t *testing.T) {
 		t.Error("too many places: no error")
 	}
 }
+
+func TestNormalizeDocStepOCR(t *testing.T) {
+	ocr := func(langs []string, force bool) contracts.DocumentStep {
+		return contracts.DocumentStep{Op: contracts.DocOCR, Langs: langs, Force: force}
+	}
+	cases := []struct {
+		name    string
+		step    contracts.DocumentStep
+		pages   int
+		wantErr bool
+		want    contracts.DocumentStep
+	}{
+		{name: "no language reads all", step: ocr(nil, false), pages: 3, want: ocr([]string{"tur", "eng"}, false)},
+		{name: "languages in order, once", step: ocr([]string{"eng", "tur", "eng"}, true), pages: 3, want: ocr([]string{"tur", "eng"}, true)},
+		{name: "one language", step: ocr([]string{"eng"}, false), pages: 3, want: ocr([]string{"eng"}, false)},
+		{name: "unknown language", step: ocr([]string{"deu"}, false), pages: 3, wantErr: true},
+		{name: "too many pages", step: ocr(nil, false), pages: contracts.MaxOCRPages + 1, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeDocStep(tc.step, tc.pages)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("no error, got %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

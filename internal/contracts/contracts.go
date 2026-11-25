@@ -348,6 +348,10 @@ const (
 	// DocSign draws an image (a hand-drawn or typed signature) onto pages.
 	// It is a picture of a signature, not a cryptographic one.
 	DocSign DocStepOp = "sign"
+	// DocOCR reads scanned pages and lays an invisible text layer over them,
+	// so their words can be searched and copied. The pages look the same, so
+	// their previews are kept.
+	DocOCR DocStepOp = "ocr"
 
 	// The steps below export the document instead of changing it: the
 	// version's download is what they make, while its pages and the PDF the
@@ -403,6 +407,12 @@ const (
 	MaxPlaces    = 200
 )
 
+// MaxOCRPages is the most pages an OCR step reads: each takes seconds.
+const MaxOCRPages = 50
+
+// OCRLanguages are the languages an OCR step can read, by Tesseract's names.
+var OCRLanguages = []string{"tur", "eng"}
+
 // Box is an area of a page as a reader sees it, with the page's rotation
 // applied: X and Y are its top-left corner, W and H its size, all fractions
 // of the page's visible width or height (X 0 is the left edge, Y 0 the top).
@@ -452,6 +462,8 @@ type PageRef struct {
 //	          the pages to crop (1-based, ascending), all when empty
 //	sign      Files: the one image upload to draw; Places: where, at most
 //	          MaxPlaces, each box at least MinPlaceSide each way
+//	ocr       Langs: what the text is written in, from OCRLanguages; Force:
+//	          read pages that already have text too
 type DocumentStep struct {
 	Op     DocStepOp `json:"op" bson:"op"`
 	Pages  []PageRef `json:"pages,omitempty" bson:"pages,omitempty"`
@@ -472,8 +484,10 @@ type DocumentStep struct {
 	Opacity   float64 `json:"opacity,omitempty" bson:"opacity,omitempty"`
 	Diagonal  bool    `json:"diagonal,omitempty" bson:"diagonal,omitempty"`
 
-	Box    *Box    `json:"box,omitempty" bson:"box,omitempty"`
-	Places []Place `json:"places,omitempty" bson:"places,omitempty"`
+	Box    *Box     `json:"box,omitempty" bson:"box,omitempty"`
+	Places []Place  `json:"places,omitempty" bson:"places,omitempty"`
+	Langs  []string `json:"langs,omitempty" bson:"langs,omitempty"`
+	Force  bool     `json:"force,omitempty" bson:"force,omitempty"`
 	// Password travels to the worker in the job message only. It is never
 	// written to the database, and never sent back to a client.
 	Password string `json:"password,omitempty" bson:"-"`
@@ -501,6 +515,8 @@ const (
 	FailWrongPassword = "wrong_password"
 	// FailConvert means an office file could not be converted to PDF.
 	FailConvert = "convert_failed"
+	// FailNothingToRead means OCR found no page without text to read.
+	FailNothingToRead = "nothing_to_read"
 )
 
 // Input is one stored file a job reads besides InputKey. A document may be

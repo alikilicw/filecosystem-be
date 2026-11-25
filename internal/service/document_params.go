@@ -227,6 +227,23 @@ func normalizeDocStep(s contracts.DocumentStep, pageCount int) (contracts.Docume
 			out.Places[i] = contracts.Place{Page: p.Page, Box: box}
 		}
 
+	case contracts.DocOCR:
+		if pageCount > contracts.MaxOCRPages {
+			return out, fmt.Errorf("text can be read from documents of at most %d pages", contracts.MaxOCRPages)
+		}
+		// Kept in OCRLanguages order, each once; none means all of them.
+		for _, lang := range contracts.OCRLanguages {
+			if len(s.Langs) == 0 || slices.Contains(s.Langs, lang) {
+				out.Langs = append(out.Langs, lang)
+			}
+		}
+		for _, lang := range s.Langs {
+			if !slices.Contains(contracts.OCRLanguages, lang) {
+				return out, fmt.Errorf("unknown language %q", lang)
+			}
+		}
+		out.Force = s.Force
+
 	default:
 		return out, fmt.Errorf("unknown op %q", s.Op)
 	}
