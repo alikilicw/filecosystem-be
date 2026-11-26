@@ -148,6 +148,9 @@ type createDocumentSessionRequest struct {
 	FileIDs []string `json:"file_ids"`
 	// Password opens the files that are encrypted PDFs.
 	Password string `json:"password"`
+	// Repair rewrites every PDF through qpdf as it is opened, which is what
+	// the repair tool is; a PDF too damaged to read is repaired either way.
+	Repair bool `json:"repair"`
 }
 
 // handleCreateDocumentSession opens the files, in order, as one document.
@@ -165,7 +168,7 @@ func (s *Server) handleCreateDocumentSession(w http.ResponseWriter, r *http.Requ
 		}
 		ids = append(ids, id)
 	}
-	session, err := s.sessions.CreateDocument(r.Context(), ids, req.Password)
+	session, err := s.sessions.CreateDocument(r.Context(), ids, req.Password, req.Repair)
 	if err != nil {
 		writeServiceError(w, s.log, err)
 		return

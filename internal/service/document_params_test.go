@@ -321,3 +321,21 @@ func TestNormalizeDocStepWord(t *testing.T) {
 		t.Error("too many pages: no error")
 	}
 }
+
+func TestNormalizeDocStepFlattenAndPDFA(t *testing.T) {
+	for _, op := range []contracts.DocStepOp{contracts.DocFlatten, contracts.DocPDFA} {
+		got, err := normalizeDocStep(contracts.DocumentStep{Op: op, Text: "x", Force: true}, 3)
+		if err != nil {
+			t.Fatalf("%s: %v", op, err)
+		}
+		if want := (contracts.DocumentStep{Op: op}); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %+v, want %+v", op, got, want)
+		}
+	}
+	if contracts.DocFlatten.Exports() {
+		t.Error("flatten edits the document: the next tool works on its result")
+	}
+	if !contracts.DocPDFA.Exports() {
+		t.Error("pdfa must export: an edit after it would break the conformance")
+	}
+}

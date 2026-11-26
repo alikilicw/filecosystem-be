@@ -95,6 +95,9 @@ var officeMimes = map[string]string{
 	"application/vnd.ms-powerpoint":                                             ".ppt",
 	"application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
 	"application/vnd.oasis.opendocument.presentation":                           ".odp",
+	// A web page is printed by Chromium rather than LibreOffice, but to the
+	// rest of the platform it is the same: a file turned into a PDF first.
+	"text/html": ".html",
 }
 
 func init() {
@@ -114,8 +117,8 @@ func InputMime(mime string) (kind Kind, ext string, ok bool) {
 	return entry.kind, entry.ext, true
 }
 
-// IsOffice reports whether a content type is an office document a worker
-// converts to PDF.
+// IsOffice reports whether a content type is an office document (or a web
+// page) a worker converts to PDF.
 func IsOffice(mime string) bool {
 	_, ok := officeMimes[normalizeMime(mime)]
 	return ok
@@ -352,6 +355,10 @@ const (
 	// so their words can be searched and copied. The pages look the same, so
 	// their previews are kept.
 	DocOCR DocStepOp = "ocr"
+	// DocFlatten draws form fields and annotations into the page content,
+	// so they can no longer be changed. The pages that had any are rendered
+	// again.
+	DocFlatten DocStepOp = "flatten"
 
 	// The steps below export the document instead of changing it: the
 	// version's download is what they make, while its pages and the PDF the
@@ -365,11 +372,14 @@ const (
 	DocProtect DocStepOp = "protect"
 	// DocWord turns the document into an editable Word file (.docx).
 	DocWord DocStepOp = "word"
+	// DocPDFA rewrites the document as PDF/A-2b, for archiving. Any later
+	// edit would break the conformance, so it ends the chain like an export.
+	DocPDFA DocStepOp = "pdfa"
 )
 
 // Exports reports whether a step exports the document rather than editing it.
 func (op DocStepOp) Exports() bool {
-	return op == DocSplit || op == DocImages || op == DocProtect || op == DocWord
+	return op == DocSplit || op == DocImages || op == DocProtect || op == DocWord || op == DocPDFA
 }
 
 // Limits for exporting pages as images. A page is drawn at DPI, but never
@@ -471,6 +481,8 @@ type PageRef struct {
 //	ocr       Langs: what the text is written in, from OCRLanguages; Force:
 //	          read pages that already have text too
 //	word      no fields; the document has at most MaxWordPages pages
+//	flatten   no fields
+//	pdfa      no fields
 type DocumentStep struct {
 	Op     DocStepOp `json:"op" bson:"op"`
 	Pages  []PageRef `json:"pages,omitempty" bson:"pages,omitempty"`
@@ -526,6 +538,15 @@ const (
 	FailNothingToRead = "nothing_to_read"
 	// FailWord means the PDF could not be turned into a Word file.
 	FailWord = "word_failed"
+	// FailNothingToFlatten means a flatten step found no form field or
+	// annotation to draw into the pages.
+	FailNothingToFlatten = "nothing_to_flatten"
+	// FailPDFAFonts means the document uses fonts it does not carry, which
+	// PDF/A forbids and the worker cannot supply.
+	FailPDFAFonts = "pdfa_fonts"
+	// FailPDFA means the document holds something else PDF/A forbids that
+	// the worker cannot fix, CMYK colour without a profile for one.
+	FailPDFA = "pdfa_failed"
 )
 
 // Input is one stored file a job reads besides InputKey. A document may be
@@ -566,6 +587,11 @@ type JobMessage struct {
 	// opened from for OpSource (InputKey is the first of them), the files an
 	// insert step adds for OpEdit.
 	Inputs []Input `json:"inputs,omitempty"`
+	// Repair makes an OpSource job rewrite every PDF it opens through qpdf,
+	// rebuilding its cross-reference table and recovering what it can, even
+	// one that reads well enough as it is. A PDF that cannot be read at all
+	// is repaired either way.
+	Repair bool `json:"repair,omitempty"`
 	// Pages are the parent version's pages, for an OpEdit document job.
 	Pages []PageInfo `json:"pages,omitempty"`
 	// OutputPrefix is where the job stores what it makes, ending in "/".

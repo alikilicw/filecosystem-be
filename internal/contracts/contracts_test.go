@@ -13,6 +13,7 @@ func TestOfficeMimes(t *testing.T) {
 		{"application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx", true},
 		{"application/vnd.ms-excel; charset=binary", ".xls", true},
 		{"Application/VND.oasis.opendocument.presentation", ".odp", true},
+		{"text/html; charset=utf-8", ".html", true},
 	} {
 		kind, ext, ok := InputMime(tc.mime)
 		if !ok {

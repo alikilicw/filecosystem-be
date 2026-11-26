@@ -249,6 +249,11 @@ func normalizeDocStep(s contracts.DocumentStep, pageCount int) (contracts.Docume
 			return out, fmt.Errorf("documents of at most %d pages can be turned into Word files", contracts.MaxWordPages)
 		}
 
+	case contracts.DocFlatten, contracts.DocPDFA:
+		// Nothing to choose: whether there is anything to flatten, or
+		// anything that keeps the document from being PDF/A, only the
+		// worker can tell.
+
 	default:
 		return out, fmt.Errorf("unknown op %q", s.Op)
 	}

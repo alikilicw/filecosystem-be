@@ -13,9 +13,10 @@ import (
 // CreateDocument opens one or more files as one document: several files are
 // joined in the order given, which is what merging is, and an image becomes a
 // page of its own. password opens any of the PDFs that is encrypted; it goes
-// to the worker in the job message and is stored nowhere. Version 0 is queued
+// to the worker in the job message and is stored nowhere. repair has the
+// worker rebuild every PDF through qpdf as it reads it. Version 0 is queued
 // at once and the session stays locked until the worker has read every file.
-func (s *SessionService) CreateDocument(ctx context.Context, fileIDs []uuid.UUID, password string) (SessionView, error) {
+func (s *SessionService) CreateDocument(ctx context.Context, fileIDs []uuid.UUID, password string, repair bool) (SessionView, error) {
 	if len(fileIDs) == 0 {
 		return SessionView{}, fmt.Errorf("%w: at least one file is required", domain.ErrInvalidInput)
 	}
@@ -64,6 +65,7 @@ func (s *SessionService) CreateDocument(ctx context.Context, fileIDs []uuid.UUID
 	msg := s.message(first, session, job)
 	msg.InputKey = first.StorageKey
 	msg.Inputs = inputsOf(files)
+	msg.Repair = repair
 	for i := range msg.Inputs {
 		msg.Inputs[i].Password = password
 	}
