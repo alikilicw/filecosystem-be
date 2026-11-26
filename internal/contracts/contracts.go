@@ -363,11 +363,13 @@ const (
 	DocImages DocStepOp = "images"
 	// DocProtect encrypts the document with a password.
 	DocProtect DocStepOp = "protect"
+	// DocWord turns the document into an editable Word file (.docx).
+	DocWord DocStepOp = "word"
 )
 
 // Exports reports whether a step exports the document rather than editing it.
 func (op DocStepOp) Exports() bool {
-	return op == DocSplit || op == DocImages || op == DocProtect
+	return op == DocSplit || op == DocImages || op == DocProtect || op == DocWord
 }
 
 // Limits for exporting pages as images. A page is drawn at DPI, but never
@@ -409,6 +411,10 @@ const (
 
 // MaxOCRPages is the most pages an OCR step reads: each takes seconds.
 const MaxOCRPages = 50
+
+// MaxWordPages is the most pages a word step converts: a page takes a
+// second or more, and a long document's layout rarely survives anyway.
+const MaxWordPages = 50
 
 // OCRLanguages are the languages an OCR step can read, by Tesseract's names.
 var OCRLanguages = []string{"tur", "eng"}
@@ -464,6 +470,7 @@ type PageRef struct {
 //	          MaxPlaces, each box at least MinPlaceSide each way
 //	ocr       Langs: what the text is written in, from OCRLanguages; Force:
 //	          read pages that already have text too
+//	word      no fields; the document has at most MaxWordPages pages
 type DocumentStep struct {
 	Op     DocStepOp `json:"op" bson:"op"`
 	Pages  []PageRef `json:"pages,omitempty" bson:"pages,omitempty"`
@@ -517,6 +524,8 @@ const (
 	FailConvert = "convert_failed"
 	// FailNothingToRead means OCR found no page without text to read.
 	FailNothingToRead = "nothing_to_read"
+	// FailWord means the PDF could not be turned into a Word file.
+	FailWord = "word_failed"
 )
 
 // Input is one stored file a job reads besides InputKey. A document may be

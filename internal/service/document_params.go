@@ -244,6 +244,11 @@ func normalizeDocStep(s contracts.DocumentStep, pageCount int) (contracts.Docume
 		}
 		out.Force = s.Force
 
+	case contracts.DocWord:
+		if pageCount > contracts.MaxWordPages {
+			return out, fmt.Errorf("documents of at most %d pages can be turned into Word files", contracts.MaxWordPages)
+		}
+
 	default:
 		return out, fmt.Errorf("unknown op %q", s.Op)
 	}

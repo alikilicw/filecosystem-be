@@ -39,6 +39,8 @@ func failedMessage(kind contracts.Kind, code ...string) string {
 			return "The office document could not be converted to PDF."
 		case contracts.FailNothingToRead:
 			return "Every page already has text: there is nothing to read."
+		case contracts.FailWord:
+			return "The PDF could not be turned into a Word file."
 		}
 	}
 	if kind == contracts.KindDocument {

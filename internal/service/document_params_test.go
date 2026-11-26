@@ -304,3 +304,20 @@ func TestNormalizeDocStepOCR(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeDocStepWord(t *testing.T) {
+	// Fields of other steps are dropped: a word step takes none.
+	got, err := normalizeDocStep(contracts.DocumentStep{Op: contracts.DocWord, Format: "png", Force: true}, contracts.MaxWordPages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (contracts.DocumentStep{Op: contracts.DocWord}); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	if !contracts.DocWord.Exports() {
+		t.Error("a word step must export: the next edit starts from the PDF")
+	}
+	if _, err := normalizeDocStep(contracts.DocumentStep{Op: contracts.DocWord}, contracts.MaxWordPages+1); err == nil {
+		t.Error("too many pages: no error")
+	}
+}
